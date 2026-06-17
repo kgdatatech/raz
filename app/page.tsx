@@ -33,6 +33,22 @@ interface TaskRow {
   created_at:   string
 }
 
+interface MemoryRow {
+  id:         number
+  repo_id:    number
+  key:        string
+  value:      string
+  updated_at: string
+}
+
+interface QueueItem {
+  id:          string
+  description: string
+  role:        RoleId
+  workflow:    string
+  issueNumber?: number
+}
+
 interface LogEntry {
   type:    'thinking' | 'tool_call' | 'tool_result' | 'plan' | 'usage' | 'complete' | 'error'
   message: string
@@ -97,6 +113,63 @@ const STATUS_TEXT: Record<string, string> = {
   running:  'text-yellow-600',
 }
 
+function MemoryEntry({
+  row,
+  onDelete,
+  onSave,
+}: {
+  row:      MemoryRow
+  onDelete: (key: string) => void
+  onSave:   (key: string, value: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft,   setDraft]   = useState(row.value)
+
+  function commit() {
+    if (draft.trim() && draft !== row.value) onSave(row.key, draft.trim())
+    setEditing(false)
+  }
+
+  return (
+    <div className="flex items-start gap-2 px-4 py-2.5 border-b border-gray-100 group hover:bg-gray-50">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="text-[9px] font-semibold text-indigo-600 uppercase tracking-wide truncate">{row.key}</span>
+          <span className="text-[8px] text-gray-300 ml-auto flex-shrink-0">
+            {new Date(row.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          </span>
+        </div>
+        {editing ? (
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit() } }}
+            rows={2}
+            className="w-full text-[10px] text-gray-700 bg-white border border-indigo-300 rounded px-1.5 py-1 resize-none focus:outline-none focus:ring-1 focus:ring-indigo-400"
+          />
+        ) : (
+          <p
+            onClick={() => setEditing(true)}
+            className="text-[10px] text-gray-600 leading-relaxed cursor-text line-clamp-2"
+            title="Click to edit"
+          >
+            {row.value}
+          </p>
+        )}
+      </div>
+      <button
+        onClick={() => onDelete(row.key)}
+        className="text-[10px] text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0 mt-0.5"
+        title="Delete memory"
+      >
+        ✕
+      </button>
+    </div>
+  )
+}
+
 export default function RazDashboard() {
   const [owner,         setOwner]         = useState('')
   const [repos,         setRepos]         = useState<RepoRow[]>([])
@@ -119,11 +192,17 @@ export default function RazDashboard() {
   const [finalCost,     setFinalCost]     = useState<number | null>(null)
   const [selectedTask,  setSelectedTask]  = useState<TaskRow | null>(null)
   const [planOpen,      setPlanOpen]      = useState(false)
+  const [bottomTab,     setBottomTab]     = useState<'history' | 'memory'>('history')
+  const [memory,        setMemory]        = useState<MemoryRow[]>([])
+  const [queue,         setQueue]         = useState<QueueItem[]>([])
 
   const logRef   = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const startRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const queueRef = useRef<QueueItem[]>([])
+
+  useEffect(() => { queueRef.current = queue }, [queue])
 
   useEffect(() => {
     fetch('/api/repos')
@@ -138,7 +217,9 @@ export default function RazDashboard() {
     setLocalPath(selectedRepo.local_path ?? '')
     setSelectedIssue(null)
     setIssues([])
+    setMemory([])
     loadTasks(selectedRepo.id)
+    if (bottomTab === 'memory') loadMemory(selectedRepo.id)
   }, [selectedRepo])
 
   useEffect(() => {
@@ -147,6 +228,30 @@ export default function RazDashboard() {
 
   function loadTasks(repoId: number) {
     fetch(`/api/tasks?repoId=${repoId}`).then((r) => r.json()).then(setTasks).catch(() => {})
+  }
+
+  function loadMemory(repoId: number) {
+    fetch(`/api/memory?repoId=${repoId}`).then((r) => r.json()).then(setMemory).catch(() => {})
+  }
+
+  async function handleDeleteMemory(key: string) {
+    if (!selectedRepo) return
+    await fetch('/api/memory', {
+      method:  'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ repoId: selectedRepo.id, key }),
+    })
+    setMemory((prev) => prev.filter((m) => m.key !== key))
+  }
+
+  async function handleSaveMemory(key: string, value: string) {
+    if (!selectedRepo) return
+    await fetch('/api/memory', {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ repoId: selectedRepo.id, key, value }),
+    })
+    setMemory((prev) => prev.map((m) => m.key === key ? { ...m, value, updated_at: new Date().toISOString() } : m))
   }
 
   async function loadIssues(repo: RepoRow) {
@@ -189,8 +294,8 @@ export default function RazDashboard() {
     setSelectedRepo(updated)
   }
 
-  async function handleRun() {
-    if (!selectedRepo || !task.trim()) return
+  async function runTask(params: { description: string; role: RoleId; workflow: string; issueNumber?: number }) {
+    if (!selectedRepo) return
     if (!selectedRepo.local_path && !localPath.trim()) { alert('Set the local repo path first.'); return }
     if (localPath && localPath !== selectedRepo.local_path) await saveLocalPath()
 
@@ -216,10 +321,10 @@ export default function RazDashboard() {
         body:    JSON.stringify({
           owner:       selectedRepo.github_owner,
           repo:        selectedRepo.github_repo,
-          description: task,
-          workflow,
-          role,
-          issueNumber: selectedIssue?.number,
+          description: params.description,
+          workflow:    params.workflow,
+          role:        params.role,
+          issueNumber: params.issueNumber,
         }),
       })
 
@@ -251,10 +356,44 @@ export default function RazDashboard() {
     } finally {
       if (timerRef.current) clearInterval(timerRef.current)
       setRunning(false)
+      // Auto-advance queue
+      const next = queueRef.current[0]
+      if (next) {
+        setQueue((prev) => prev.slice(1))
+        queueRef.current = queueRef.current.slice(1)
+        setTimeout(() => runTask(next), 400)
+      }
     }
   }
 
-  const canRun = !running && !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())
+  function handleRun() {
+    if (!selectedRepo || !task.trim()) return
+    runTask({ description: task, role, workflow, issueNumber: selectedIssue?.number })
+  }
+
+  function addToQueue() {
+    if (!task.trim()) return
+    setQueue((prev) => [...prev, {
+      id:          Math.random().toString(36).slice(2),
+      description: task,
+      role,
+      workflow,
+      issueNumber: selectedIssue?.number,
+    }])
+    setTask('')
+  }
+
+  function handleRetry(t: TaskRow) {
+    const retryRole     = (ROLE_IDS.includes(t.role as RoleId) ? t.role : DEFAULT_ROLE) as RoleId
+    const retryWorkflow = ROLE_WORKFLOWS[retryRole].includes(t.workflow ?? '') ? t.workflow : ROLE_DEFAULT_WORKFLOW[retryRole]
+    setSelectedTask(null)
+    setRole(retryRole)
+    setWorkflow(retryWorkflow)
+    setTask(t.description)
+  }
+
+  const canRun   = !running && !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())
+  const canQueue = !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())
   const activeRole = ROLES[role]
 
   return (
@@ -303,9 +442,7 @@ export default function RazDashboard() {
               )}
               {selectedRepo && (
                 <div className="flex flex-wrap gap-1 mt-1.5">
-                  <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">
-                    {selectedRepo.default_branch}
-                  </span>
+                  <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">{selectedRepo.default_branch}</span>
                   {selectedRepo.local_path
                     ? <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5 font-mono truncate max-w-[200px]">{selectedRepo.local_path}</span>
                     : <span className="text-[9px] bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 border border-amber-200">path not set</span>
@@ -314,7 +451,7 @@ export default function RazDashboard() {
               )}
             </div>
 
-            {/* Local path setup (one-time) */}
+            {/* Local path setup */}
             {selectedRepo && !selectedRepo.local_path && (
               <div>
                 <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Local Path</label>
@@ -332,7 +469,6 @@ export default function RazDashboard() {
               </div>
             )}
 
-            {/* Divider */}
             <div className="border-t border-gray-100" />
 
             {/* Role */}
@@ -430,7 +566,7 @@ export default function RazDashboard() {
               />
             </div>
 
-            {/* Run / Stop */}
+            {/* Run / Queue / Stop */}
             <div className="flex gap-1.5">
               <button
                 onClick={handleRun}
@@ -445,6 +581,16 @@ export default function RazDashboard() {
                   </span>
                 ) : `Run ${role}`}
               </button>
+              {!running && (
+                <button
+                  onClick={addToQueue}
+                  disabled={!canQueue}
+                  title="Add to queue — runs after current task"
+                  className="px-2.5 py-2 bg-white border border-gray-200 text-gray-500 text-[10px] font-medium rounded-md hover:border-gray-400 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  +Q
+                </button>
+              )}
               {running && (
                 <button
                   onClick={() => { abortRef.current?.abort(); setRunning(false) }}
@@ -454,6 +600,34 @@ export default function RazDashboard() {
                 </button>
               )}
             </div>
+
+            {/* Queue list */}
+            {queue.length > 0 && (
+              <div className="border border-gray-200 rounded-md overflow-hidden">
+                <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                  <span className="text-[9px] font-semibold text-gray-500 uppercase tracking-widest">Queue</span>
+                  <span className="text-[9px] text-gray-400 bg-gray-200 rounded-full px-1.5 py-0.5">{queue.length}</span>
+                </div>
+                {queue.map((item, i) => (
+                  <div key={item.id} className="flex items-start gap-2 px-3 py-2 border-b border-gray-100 last:border-0">
+                    <span className="text-[8px] text-gray-400 font-mono mt-0.5 flex-shrink-0">{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <span className="text-[8px] font-bold" style={{ color: ROLES[item.role].color }}>{ROLES[item.role].badge}</span>
+                        <span className="text-[8px] text-gray-400">{item.workflow}</span>
+                      </div>
+                      <p className="text-[10px] text-gray-600 truncate">{item.description}</p>
+                    </div>
+                    <button
+                      onClick={() => setQueue((prev) => prev.filter((q) => q.id !== item.id))}
+                      className="text-gray-300 hover:text-red-500 text-[10px] flex-shrink-0 transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Plan (collapsible) */}
             {activePlan && (
@@ -533,40 +707,85 @@ export default function RazDashboard() {
             </div>
           </div>
 
-          {/* Task History */}
+          {/* Bottom panel — History / Memory tabs */}
           <div className="h-56 flex-shrink-0 border-t border-gray-200 flex flex-col">
-            <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center justify-between px-4">
-              <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Task History</span>
-              {tasks.length > 0 && (
-                <span className="text-[9px] text-gray-400 bg-gray-100 rounded-full px-2 py-0.5">{tasks.length}</span>
-              )}
-            </div>
-            <div className="flex-1 overflow-y-auto bg-white divide-y divide-gray-100">
-              {tasks.length === 0 ? (
-                <div className="h-full flex items-center justify-center">
-                  <span className="text-xs text-gray-300">{selectedRepo ? 'No tasks yet.' : 'Select a repo.'}</span>
-                </div>
-              ) : tasks.map((t) => (
+            <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center">
+              {(['history', 'memory'] as const).map((tab) => (
                 <button
-                  key={t.id}
-                  onClick={() => setSelectedTask(t)}
-                  className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                  key={tab}
+                  onClick={() => {
+                    setBottomTab(tab)
+                    if (tab === 'memory' && selectedRepo) loadMemory(selectedRepo.id)
+                  }}
+                  className={`h-full px-4 text-[9px] font-semibold uppercase tracking-widest border-b-2 transition-colors capitalize ${
+                    bottomTab === tab
+                      ? 'border-gray-900 text-gray-900'
+                      : 'border-transparent text-gray-400 hover:text-gray-600'
+                  }`}
                 >
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[9px] font-bold uppercase tracking-wide ${STATUS_TEXT[t.status] ?? 'text-gray-400'}`}>{t.status}</span>
-                      <span className="text-[9px] text-gray-400">{t.role ?? 'RAZ-Dev'} · {t.workflow ?? 'feature'}</span>
-                      <span className="text-[9px] text-gray-300 ml-auto">
-                        {new Date(t.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-gray-600 truncate mt-0.5">{t.description}</p>
-                  </div>
-                  <span className="text-gray-300 text-[10px] flex-shrink-0">›</span>
+                  {tab}
+                  {tab === 'history' && tasks.length > 0 && (
+                    <span className="ml-1.5 text-[8px] text-gray-400">{tasks.length}</span>
+                  )}
+                  {tab === 'memory' && memory.length > 0 && (
+                    <span className="ml-1.5 text-[8px] text-gray-400">{memory.length}</span>
+                  )}
                 </button>
               ))}
             </div>
+
+            {/* History tab */}
+            {bottomTab === 'history' && (
+              <div className="flex-1 overflow-y-auto bg-white divide-y divide-gray-100">
+                {tasks.length === 0 ? (
+                  <div className="h-full flex items-center justify-center">
+                    <span className="text-xs text-gray-300">{selectedRepo ? 'No tasks yet.' : 'Select a repo.'}</span>
+                  </div>
+                ) : tasks.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setSelectedTask(t)}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[9px] font-bold uppercase tracking-wide ${STATUS_TEXT[t.status] ?? 'text-gray-400'}`}>{t.status}</span>
+                        <span className="text-[9px] text-gray-400">{t.role ?? 'RAZ-Dev'} · {t.workflow ?? 'feature'}</span>
+                        <span className="text-[9px] text-gray-300 ml-auto">
+                          {new Date(t.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-gray-600 truncate mt-0.5">{t.description}</p>
+                    </div>
+                    <span className="text-gray-300 text-[10px] flex-shrink-0">›</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Memory tab */}
+            {bottomTab === 'memory' && (
+              <div className="flex-1 overflow-y-auto bg-white divide-y divide-gray-100">
+                {!selectedRepo ? (
+                  <div className="h-full flex items-center justify-center">
+                    <span className="text-xs text-gray-300">Select a repo.</span>
+                  </div>
+                ) : memory.length === 0 ? (
+                  <div className="h-full flex items-center justify-center flex-col gap-1">
+                    <span className="text-xs text-gray-300">No memories yet.</span>
+                    <span className="text-[10px] text-gray-300">Run a task — RAZ will save what it learns here.</span>
+                  </div>
+                ) : memory.map((m) => (
+                  <MemoryEntry
+                    key={m.key}
+                    row={m}
+                    onDelete={handleDeleteMemory}
+                    onSave={handleSaveMemory}
+                  />
+                ))}
+              </div>
+            )}
           </div>
 
         </div>
@@ -593,7 +812,18 @@ export default function RazDashboard() {
                   <span className="text-xs text-indigo-500">Issue #{selectedTask.issue_number}</span>
                 )}
               </div>
-              <button onClick={() => setSelectedTask(null)} className="text-gray-400 hover:text-gray-700 text-base leading-none transition-colors">✕</button>
+              <div className="flex items-center gap-2">
+                {(selectedTask.status === 'failed' || selectedTask.status === 'complete') && (
+                  <button
+                    onClick={() => handleRetry(selectedTask)}
+                    className="px-3 py-1 text-[10px] font-semibold rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+                    title={selectedTask.status === 'failed' ? 'Pre-fill and retry this task' : 'Pre-fill and re-run this task'}
+                  >
+                    ↺ {selectedTask.status === 'failed' ? 'Retry' : 'Re-run'}
+                  </button>
+                )}
+                <button onClick={() => setSelectedTask(null)} className="text-gray-400 hover:text-gray-700 text-base leading-none transition-colors">✕</button>
+              </div>
             </div>
 
             {/* Modal body */}

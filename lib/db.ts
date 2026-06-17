@@ -215,6 +215,14 @@ export function getTask(id: string): TaskRow | null {
 
 // ─── Memory ───────────────────────────────────────────────────────────────────
 
+export interface MemoryRow {
+  id:         number
+  repo_id:    number
+  key:        string
+  value:      string
+  updated_at: string
+}
+
 export function setMemory(repoId: number, key: string, value: string) {
   db.prepare(`
     INSERT INTO memory (repo_id, key, value) VALUES (?, ?, ?)
@@ -225,6 +233,14 @@ export function setMemory(repoId: number, key: string, value: string) {
 export function getMemory(repoId: number): Record<string, string> {
   const rows = db.prepare(`SELECT key, value FROM memory WHERE repo_id = ?`).all(repoId) as { key: string; value: string }[]
   return Object.fromEntries(rows.map((r) => [r.key, r.value]))
+}
+
+export function listMemoryRows(repoId: number): MemoryRow[] {
+  return db.prepare(`SELECT * FROM memory WHERE repo_id = ? ORDER BY updated_at DESC`).all(repoId) as MemoryRow[]
+}
+
+export function deleteMemory(repoId: number, key: string) {
+  db.prepare(`DELETE FROM memory WHERE repo_id = ? AND key = ?`).run(repoId, key)
 }
 
 // ─── Issues ───────────────────────────────────────────────────────────────────
