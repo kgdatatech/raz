@@ -4,39 +4,105 @@ import { execSync } from 'child_process'
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN })
 
 export interface PROptions {
-  repoPath:    string
-  owner:       string
-  repo:        string
-  branch:      string
-  baseBranch:  string
-  title:       string
-  body:        string
+  repoPath:   string
+  owner:      string
+  repo:       string
+  branch:     string
+  baseBranch: string
+  title:      string
+  body:       string
 }
 
 export async function pushBranchAndOpenPR(opts: PROptions): Promise<string> {
   const { repoPath, owner, repo, branch, baseBranch, title, body } = opts
-
-  // Push the worktree branch to origin
   execSync(`git push origin "${branch}"`, { cwd: repoPath })
-
-  const pr = await octokit.pulls.create({
-    owner,
-    repo,
-    title,
-    body,
-    head:  branch,
-    base:  baseBranch,
-    draft: false,
-  })
-
+  const pr = await octokit.pulls.create({ owner, repo, title, body, head: branch, base: baseBranch, draft: false })
   return pr.data.html_url
 }
 
 export async function getRepoInfo(owner: string, repo: string) {
   const { data } = await octokit.repos.get({ owner, repo })
-  return {
-    defaultBranch: data.default_branch,
-    fullName:      data.full_name,
-    private:       data.private,
+  return { defaultBranch: data.default_branch, fullName: data.full_name, private: data.private }
+}
+
+// ─── Issues ───────────────────────────────────────────────────────────────────
+
+export async function fetchIssue(owner: string, repo: string, number: number): Promise<string> {
+  const { data } = await octokit.issues.get({ owner, repo, issue_number: number })
+  const labels = data.labels.map((l) => (typeof l === 'string' ? l : l.name ?? '')).join(', ')
+  const comments = data.comments > 0 ? `\nComments: ${data.comments}` : ''
+  return [
+    `Issue #${data.number}: ${data.title}`,
+    `State: ${data.state}`,
+    `Labels: ${labels || 'none'}`,
+    `Assignee: ${data.assignee?.login ?? 'unassigned'}`,
+    comments,
+    `\nBody:\n${data.body ?? '(no body)'}`,
+  ].filter(Boolean).join('\n')
+}
+
+export async function listOpenIssues(owner: string, repo: string, limit = 20): Promise<string> {
+  const { data } = await octokit.issues.listForRepo({ owner, repo, state: 'open', per_page: limit, sort: 'created', direction: 'desc' })
+  if (data.length === 0) return 'No open issues.'
+  return data
+    .map((i) => {
+      const labels = i.labels.map((l) => (typeof l === 'string' ? l : l.name ?? '')).join(', ')
+      return `#${i.number} [${labels || 'no label'}] ${i.title}`
+    })
+    .join('\n')
+}
+
+export async function syncIssues(owner: string, repo: string): Promise<{
+  number: number; title: string; body: string | null; state: string; labels: string[]; assignee: string | null
+}[]> {
+  const { data } = await octokit.issues.listForRepo({ owner, repo, state: 'all', per_page: 100 })
+  return data.map((i) => ({
+    number:   i.number,
+    title:    i.title,
+    body:     i.body ?? null,
+    state:    i.state,
+    labels:   i.labels.map((l) => (typeof l === 'string' ? l : l.name ?? '')),
+    assignee: i.assignee?.login ?? null,
+  }))
+}
+
+// ─── PR Status ────────────────────────────────────────────────────────────────
+
+export async function getPRStatus(owner: string, repo: string, prNumber: number) {
+  const [prRes, reviewsRes, checksRes] = await Promise.all([
+    octokit.pulls.get({ owner, repo, pull_number: prNumber }),
+    octokit.pulls.listReviews({ owner, repo, pull_number: prNumber }),
+    octokit.checks.listForRef({ owner, repo, ref: `refs/pull/${prNumber}/head` }).catch(() => ({ data: { check_runs: [] } })),
+  ])
+
+  const pr      = prRes.data
+  const reviews = reviewsRes.data
+  const checks  = checksRes.data.check_runs
+
+  const latestReviews = new Map<string, string>()
+  for (const r of reviews) {
+    if (r.user?.login) latestReviews.set(r.user.login, r.state)
   }
+
+  const approved  = [...latestReviews.values()].filter((s) => s === 'APPROVED').length
+  const rejected  = [...latestReviews.values()].filter((s) => s === 'CHANGES_REQUESTED').length
+  const ciPassing = checks.every((c) => c.conclusion === 'success' || c.conclusion === 'skipped')
+  const ciStatus  = checks.length === 0 ? 'no_checks' : ciPassing ? 'passing' : 'failing'
+
+  return {
+    prNumber,
+    state:          pr.state,
+    merged:         pr.merged,
+    title:          pr.title,
+    reviewDecision: (pr as unknown as Record<string, unknown>).review_decision as string ?? 'none',
+    approvals:      approved,
+    rejections:     rejected,
+    ciStatus,
+    checkCount:     checks.length,
+    url:            pr.html_url,
+  }
+}
+
+export async function addPRComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
+  await octokit.issues.createComment({ owner, repo, issue_number: prNumber, body })
 }

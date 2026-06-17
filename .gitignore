@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# RAZ local data (sqlite db, reports, worktrees)
+.raziel/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
