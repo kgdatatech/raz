@@ -14,6 +14,38 @@ function safeEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return { ...rest, ...extra }
 }
 
+// ── WSL path helpers ──────────────────────────────────────────────────────────
+function isWslPath(p: string): boolean {
+  return /^\\\\wsl(?:\.localhost|\$)\\/i.test(p)
+}
+function wslDistro(p: string): string {
+  return p.match(/^\\\\wsl(?:\.localhost|\$)\\([^\\]+)/i)?.[1] ?? 'Ubuntu'
+}
+function toLinuxPath(p: string): string {
+  const m = p.match(/^\\\\wsl(?:\.localhost|\$)\\[^\\]+(.+)$/i)
+  return m ? m[1].replace(/\\/g, '/') : p
+}
+
+// All shell commands in the worktree go through this — routes via WSL for WSL paths
+async function execInPath(
+  cmd: string,
+  cwd: string,
+  opts: { timeout?: number; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  if (isWslPath(cwd)) {
+    const distro   = wslDistro(cwd)
+    const linuxCwd = toLinuxPath(cwd)
+    // Prepend simple env vars (CI, NODE_ENV) that tools need inside WSL
+    const envPrefix = [
+      opts.env?.CI       ? `CI=${opts.env.CI}`             : '',
+      opts.env?.NODE_ENV ? `NODE_ENV=${opts.env.NODE_ENV}` : '',
+    ].filter(Boolean).join(' ')
+    const inner = `cd ${JSON.stringify(linuxCwd)} && ${envPrefix ? envPrefix + ' ' : ''}${cmd}`
+    return execAsync(`wsl -d ${distro} -- bash -c ${JSON.stringify(inner)}`, { timeout: opts.timeout })
+  }
+  return execAsync(cmd, { cwd, ...opts })
+}
+
 export interface ToolContext {
   worktreePath: string
   repoId?:      number
@@ -401,7 +433,7 @@ export async function executeTool(
       const includeFlag = glob ? `--include="${glob}"` : '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.md" --include="*.css"'
       const cmd = `grep -rn ${includeFlag} -C ${ctx_lines} ${JSON.stringify(pattern)} . 2>/dev/null | head -200`
       try {
-        const { stdout } = await execAsync(cmd, { cwd: worktreePath, timeout: 15_000 })
+        const { stdout } = await execInPath(cmd, worktreePath, { timeout: 15_000 })
         return stdout.trim() || `No matches found for: ${pattern}`
       } catch (e: unknown) {
         const err = e as { stdout?: string }
@@ -413,9 +445,9 @@ export async function executeTool(
     case 'get_diff': {
       const statOnly = input.stat_only as boolean | undefined
       try {
-        const { stdout: stat } = await execAsync('git diff --stat HEAD', { cwd: worktreePath })
+        const { stdout: stat } = await execInPath('git diff --stat HEAD', worktreePath)
         if (statOnly) return stat.trim() || 'No changes yet.'
-        const { stdout: diff } = await execAsync('git diff HEAD', { cwd: worktreePath })
+        const { stdout: diff } = await execInPath('git diff HEAD', worktreePath)
         const trimmed = diff.slice(0, 4000)
         return `${stat.trim()}\n\n${trimmed}${diff.length > 4000 ? '\n...[truncated]' : ''}`
       } catch {
@@ -430,8 +462,7 @@ export async function executeTool(
         return `ERROR: Command not allowed: "${command}"\nAllowed: git, npm, npx, pnpm, yarn, ls, cat, find, grep, echo, mkdir, cp, mv, touch, node, tsc, tsx, prettier, eslint, vitest, jest, mocha, python, which, pwd, wc, head, tail, diff`
       }
       try {
-        const { stdout, stderr } = await execAsync(command, {
-          cwd: worktreePath,
+        const { stdout, stderr } = await execInPath(command, worktreePath, {
           timeout: 60_000,
           env: safeEnv({ NODE_ENV: process.env.NODE_ENV ?? 'development' }),
         })
@@ -451,7 +482,7 @@ export async function executeTool(
       const hasTsConfig = fs.existsSync(path.join(worktreePath, 'tsconfig.json'))
       if (hasTsConfig) {
         try {
-          const { stdout, stderr } = await execAsync('npx tsc --noEmit 2>&1', { cwd: worktreePath, timeout: 120_000 })
+          const { stdout, stderr } = await execInPath('npx tsc --noEmit 2>&1', worktreePath, { timeout: 120_000 })
           const out = (stdout + stderr).trim()
           results.push(`[tsc] ${out || 'PASS — no type errors'}`)
         } catch (e: unknown) {
@@ -464,7 +495,7 @@ export async function executeTool(
       const scripts = await readPackageScripts(worktreePath)
       if (scripts.build) {
         try {
-          const { stdout, stderr } = await execAsync(`${pm} run build 2>&1`, { cwd: worktreePath, timeout: 180_000 })
+          const { stdout, stderr } = await execInPath(`${pm} run build 2>&1`, worktreePath, { timeout: 180_000 })
           const out = (stdout + stderr).trim()
           results.push(`[build] ${out.slice(0, 2000)}${out.length > 2000 ? '\n...[truncated]' : ''}`)
         } catch (e: unknown) {
@@ -491,7 +522,7 @@ export async function executeTool(
         : `${pm} test 2>&1`
 
       try {
-        const { stdout, stderr } = await execAsync(cmd, { cwd: worktreePath, timeout: 90_000, env: safeEnv({ CI: 'true' }) })
+        const { stdout, stderr } = await execInPath(cmd, worktreePath, { timeout: 90_000, env: safeEnv({ CI: 'true' }) })
         const out = (stdout + stderr).trim()
         return out.slice(0, 3000) + (out.length > 3000 ? '\n...[truncated]' : '')
       } catch (e: unknown) {
@@ -509,7 +540,7 @@ export async function executeTool(
 
       if (scripts.lint) {
         try {
-          const { stdout, stderr } = await execAsync(`${pm} run lint 2>&1`, { cwd: worktreePath, timeout: 60_000 })
+          const { stdout, stderr } = await execInPath(`${pm} run lint 2>&1`, worktreePath, { timeout: 60_000 })
           return ((stdout + stderr).trim() || 'PASS — no lint errors').slice(0, 3000)
         } catch (e: unknown) {
           const err = e as { stdout?: string; stderr?: string }
@@ -519,7 +550,7 @@ export async function executeTool(
 
       // Fallback: direct eslint
       try {
-        const { stdout, stderr } = await execAsync(`npx eslint ${target} 2>&1`, { cwd: worktreePath, timeout: 60_000 })
+        const { stdout, stderr } = await execInPath(`npx eslint ${target} 2>&1`, worktreePath, { timeout: 60_000 })
         return ((stdout + stderr).trim() || 'PASS — no lint errors').slice(0, 3000)
       } catch (e: unknown) {
         const err = e as { stdout?: string; stderr?: string }
@@ -547,12 +578,12 @@ export async function executeTool(
     case 'security_scan': {
       let changedFiles: string[] = []
       try {
-        const { stdout } = await execAsync('git diff --name-only HEAD', { cwd: worktreePath })
+        const { stdout } = await execInPath('git diff --name-only HEAD', worktreePath)
         changedFiles = stdout.trim().split('\n').filter(Boolean)
       } catch {
         // No commits yet — scan all tracked files
         try {
-          const { stdout } = await execAsync('git ls-files', { cwd: worktreePath })
+          const { stdout } = await execInPath('git ls-files', worktreePath)
           changedFiles = stdout.trim().split('\n').filter(Boolean).slice(0, 50)
         } catch {}
       }
@@ -604,7 +635,7 @@ export async function executeTool(
       const pm = await detectPackageManager(worktreePath)
       const auditCmd = pm === 'pnpm' ? 'pnpm audit' : pm === 'yarn' ? 'yarn audit' : 'npm audit'
       try {
-        const { stdout, stderr } = await execAsync(`${auditCmd} 2>&1`, { cwd: worktreePath, timeout: 60_000 })
+        const { stdout, stderr } = await execInPath(`${auditCmd} 2>&1`, worktreePath, { timeout: 60_000 })
         const out = (stdout + stderr).trim()
         return `DEPENDENCY AUDIT:\n${out.slice(0, 3000)}${out.length > 3000 ? '\n...[truncated]' : ''}`
       } catch (e: unknown) {
@@ -639,7 +670,7 @@ export async function executeTool(
       }
       const cmd = `${pm} test -- --coverage --coverageReporters=text 2>&1`
       try {
-        const { stdout, stderr } = await execAsync(cmd, { cwd: worktreePath, timeout: 120_000, env: safeEnv({ CI: 'true' }) })
+        const { stdout, stderr } = await execInPath(cmd, worktreePath, { timeout: 120_000, env: safeEnv({ CI: 'true' }) })
         const out   = (stdout + stderr).trim()
         const lines = out.split('\n')
         const start = lines.findIndex((l) => l.includes('% Stmts') || l.includes('Coverage summary') || l.includes('Stmts'))

@@ -279,6 +279,7 @@ export default function RazDashboard() {
     if (entry.type === 'plan') { setActivePlan(entry.message); setPlanOpen(true) }
     if (entry.type === 'usage') setLiveCost((entry.data?.costUsd as number) ?? 0)
     if (entry.type === 'complete') setFinalCost((entry.data?.costUsd as number) ?? liveCost)
+    if (entry.type === 'error')   setFinalCost((prev) => prev ?? liveCost)
     setTimeout(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' }), 50)
   }
 

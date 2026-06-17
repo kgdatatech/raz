@@ -104,6 +104,9 @@ export async function POST(req: NextRequest) {
           }
         } else if (completionData?.commit_skipped) {
           completeTask(taskId, null, String(completionData.summary ?? ''), [])
+        } else {
+          // Agent emitted an error event and returned without completing — mark DB
+          failTask(taskId, 'Agent did not reach task_complete')
         }
       } catch (err) {
         failTask(taskId, String(err))

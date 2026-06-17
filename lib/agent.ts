@@ -6,6 +6,21 @@ import { TOOLS, executeTool, ToolName, ToolContext } from './tools'
 import { getMemory, setMemory, listTasks, getIssue } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
 
+// ── WSL path helpers ──────────────────────────────────────────────────────────
+function isWslPath(p: string): boolean {
+  return /^\\\\wsl(?:\.localhost|\$)\\/i.test(p)
+}
+function wslDistro(p: string): string {
+  return p.match(/^\\\\wsl(?:\.localhost|\$)\\([^\\]+)/i)?.[1] ?? 'Ubuntu'
+}
+function toLinuxPath(p: string): string {
+  const m = p.match(/^\\\\wsl(?:\.localhost|\$)\\[^\\]+(.+)$/i)
+  return m ? m[1].replace(/\\/g, '/') : p
+}
+function toUncPath(distro: string, linuxPath: string): string {
+  return `\\\\wsl.localhost\\${distro}${linuxPath.replace(/\//g, '\\')}`
+}
+
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export interface AgentTask {
@@ -39,12 +54,36 @@ function readContextFiles(repoPath: string): string {
 }
 
 function setupWorktree(repoPath: string, branch: string): string {
-  const worktreePath = path.join(repoPath, '..', `.raziel-worktree-${branch.replace(/\//g, '-')}`)
+  const slug = `.raziel-worktree-${branch.replace(/\//g, '-')}`
+
+  if (isWslPath(repoPath)) {
+    const distro    = wslDistro(repoPath)
+    const linuxRepo = toLinuxPath(repoPath)
+    const linuxPar  = linuxRepo.split('/').slice(0, -1).join('/')
+    const linuxWt   = `${linuxPar}/${slug}`
+    try {
+      execSync(
+        `wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree remove --force ${JSON.stringify(linuxWt)}`,
+        { stdio: 'pipe' },
+      )
+    } catch {}
+    try {
+      execSync(
+        `wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree add -b ${JSON.stringify(branch)} ${JSON.stringify(linuxWt)}`,
+        { stdio: 'pipe' },
+      )
+    } catch (e) {
+      throw new Error(`Failed to create worktree: ${e}`)
+    }
+    return toUncPath(distro, linuxWt)
+  }
+
+  const worktreePath = path.join(repoPath, '..', slug)
   try {
     if (fs.existsSync(worktreePath)) {
-      execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath })
+      execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
     }
-    execSync(`git worktree add -b "${branch}" "${worktreePath}"`, { cwd: repoPath })
+    execSync(`git worktree add -b "${branch}" "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
     return worktreePath
   } catch (e) {
     throw new Error(`Failed to create worktree: ${e}`)
@@ -52,14 +91,36 @@ function setupWorktree(repoPath: string, branch: string): string {
 }
 
 function cleanupWorktree(repoPath: string, worktreePath: string) {
-  try { execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath }) } catch {}
+  try {
+    if (isWslPath(repoPath)) {
+      const distro    = wslDistro(repoPath)
+      const linuxRepo = toLinuxPath(repoPath)
+      const linuxWt   = toLinuxPath(worktreePath)
+      execSync(
+        `wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree remove --force ${JSON.stringify(linuxWt)}`,
+        { stdio: 'pipe' },
+      )
+    } else {
+      execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
+    }
+  } catch {}
 }
 
 function commitChanges(worktreePath: string, summary: string, workflow: string, commitPrefix: string) {
-  execSync('git add -A', { cwd: worktreePath })
   const type    = workflow === 'fix' ? 'fix' : workflow === 'refactor' ? 'refactor' : workflow === 'audit' ? 'chore' : 'feat'
   const message = `${type}(${commitPrefix}): ${summary.slice(0, 72)}\n\nAutomated by RAZ — Archon Systems`
-  execSync(`git commit -m ${JSON.stringify(message)}`, { cwd: worktreePath })
+
+  if (isWslPath(worktreePath)) {
+    const distro   = wslDistro(worktreePath)
+    const linuxWt  = toLinuxPath(worktreePath)
+    // Base64-encode the message so newlines and special chars survive bash quoting
+    const msgB64   = Buffer.from(message, 'utf-8').toString('base64')
+    const innerCmd = `cd ${JSON.stringify(linuxWt)} && git add -A && printf '%s' '${msgB64}' | base64 -d | git commit -F -`
+    execSync(`wsl -d ${distro} -- bash -c ${JSON.stringify(innerCmd)}`, { stdio: 'pipe' })
+  } else {
+    execSync('git add -A', { cwd: worktreePath, stdio: 'pipe' })
+    execSync(`git commit -m ${JSON.stringify(message)}`, { cwd: worktreePath, stdio: 'pipe' })
+  }
 }
 
 function buildSystemPrompt(params: {
