@@ -97,6 +97,11 @@ if (VERSION < 3) {
   db.exec('PRAGMA user_version = 3')
 }
 
+if (VERSION < 4) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN messages_json TEXT`) } catch {}
+  db.exec('PRAGMA user_version = 4')
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RepoRow {
@@ -211,6 +216,20 @@ export function listTasks(repoId?: number): TaskRow[] {
 
 export function getTask(id: string): TaskRow | null {
   return (db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow) ?? null
+}
+
+export function saveTaskMessages(taskId: string, messages: unknown[]): void {
+  db.prepare(`UPDATE tasks SET messages_json = ? WHERE id = ?`).run(JSON.stringify(messages), taskId)
+}
+
+export function getTaskMessages(taskId: string): unknown[] | null {
+  const row = db.prepare(`SELECT messages_json FROM tasks WHERE id = ?`).get(taskId) as { messages_json: string | null } | undefined
+  if (!row?.messages_json) return null
+  try { return JSON.parse(row.messages_json) } catch { return null }
+}
+
+export function resetTaskToRunning(taskId: string): void {
+  db.prepare(`UPDATE tasks SET status = 'running', error = NULL, completed_at = NULL WHERE id = ?`).run(taskId)
 }
 
 // ─── Memory ───────────────────────────────────────────────────────────────────

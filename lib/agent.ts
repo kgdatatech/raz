@@ -3,8 +3,31 @@ import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
 import { TOOLS, executeTool, ToolName, ToolContext } from './tools'
-import { getMemory, setMemory, listTasks, getIssue } from './db'
+import { getMemory, listTasks, getIssue, saveTaskMessages } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+export interface AgentTask {
+  taskId:             string
+  repoPath:           string
+  description:        string
+  branch:             string
+  workflow:           string
+  role?:              RoleId
+  repoId?:            number
+  issueNumber?:       number
+  github?:            { owner: string; repo: string }
+  checkpointMessages?: unknown[]
+}
+
+export interface AgentEvent {
+  type:    'thinking' | 'tool_call' | 'tool_result' | 'plan' | 'usage' | 'complete' | 'error'
+  message: string
+  data?:   Record<string, unknown>
+}
+
+export type EventCallback = (event: AgentEvent) => void
 
 // ── WSL path helpers ──────────────────────────────────────────────────────────
 function isWslPath(p: string): boolean {
@@ -21,38 +44,7 @@ function toUncPath(distro: string, linuxPath: string): string {
   return `\\\\wsl.localhost\\${distro}${linuxPath.replace(/\//g, '\\')}`
 }
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
-export interface AgentTask {
-  taskId:      string
-  repoPath:    string
-  description: string
-  branch:      string
-  workflow:    string
-  role?:       RoleId
-  repoId?:     number
-  issueNumber?: number
-  github?:     { owner: string; repo: string }
-}
-
-export interface AgentEvent {
-  type:    'thinking' | 'tool_call' | 'tool_result' | 'plan' | 'usage' | 'complete' | 'error'
-  message: string
-  data?:   Record<string, unknown>
-}
-
-export type EventCallback = (event: AgentEvent) => void
-
-function readContextFiles(repoPath: string): string {
-  const files = ['CLAUDE.md', 'AGENTS.md', 'README.md', '.raziel/context.md']
-  const parts: string[] = []
-  for (const file of files) {
-    const p = path.join(repoPath, file)
-    if (fs.existsSync(p)) parts.push(`=== ${file} ===\n${fs.readFileSync(p, 'utf-8')}`)
-  }
-  return parts.join('\n\n')
-}
-
+// ── Worktree ──────────────────────────────────────────────────────────────────
 function setupWorktree(repoPath: string, branch: string): string {
   const slug = `.raziel-worktree-${branch.replace(/\//g, '-')}`
 
@@ -72,8 +64,16 @@ function setupWorktree(repoPath: string, branch: string): string {
         `wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree add -b ${JSON.stringify(branch)} ${JSON.stringify(linuxWt)}`,
         { stdio: 'pipe' },
       )
-    } catch (e) {
-      throw new Error(`Failed to create worktree: ${e}`)
+    } catch {
+      // Branch already exists (resume) — check it out without -b
+      try {
+        execSync(
+          `wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree add ${JSON.stringify(linuxWt)} ${JSON.stringify(branch)}`,
+          { stdio: 'pipe' },
+        )
+      } catch (e2) {
+        throw new Error(`Failed to create worktree: ${e2}`)
+      }
     }
     return toUncPath(distro, linuxWt)
   }
@@ -83,7 +83,12 @@ function setupWorktree(repoPath: string, branch: string): string {
     if (fs.existsSync(worktreePath)) {
       execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
     }
-    execSync(`git worktree add -b "${branch}" "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
+    try {
+      execSync(`git worktree add -b "${branch}" "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
+    } catch {
+      // Branch already exists (resume) — check it out without -b
+      execSync(`git worktree add "${worktreePath}" "${branch}"`, { cwd: repoPath, stdio: 'pipe' })
+    }
     return worktreePath
   } catch (e) {
     throw new Error(`Failed to create worktree: ${e}`)
@@ -113,7 +118,6 @@ function commitChanges(worktreePath: string, summary: string, workflow: string, 
   if (isWslPath(worktreePath)) {
     const distro   = wslDistro(worktreePath)
     const linuxWt  = toLinuxPath(worktreePath)
-    // Base64-encode the message so newlines and special chars survive bash quoting
     const msgB64   = Buffer.from(message, 'utf-8').toString('base64')
     const innerCmd = `cd ${JSON.stringify(linuxWt)} && git add -A && printf '%s' '${msgB64}' | base64 -d | git commit -F -`
     execSync(`wsl -d ${distro} -- bash -c ${JSON.stringify(innerCmd)}`, { stdio: 'pipe' })
@@ -123,6 +127,44 @@ function commitChanges(worktreePath: string, summary: string, workflow: string, 
   }
 }
 
+// ── Rate-limit backoff ────────────────────────────────────────────────────────
+async function callWithBackoff(
+  fn:       () => Promise<Anthropic.Message>,
+  onRetry:  (attempt: number, delayMs: number) => void,
+  signal?:  AbortSignal,
+  maxRetries = 5,
+): Promise<Anthropic.Message> {
+  for (let i = 0; i < maxRetries; i++) {
+    if (signal?.aborted) throw new Error('Task cancelled.')
+    try {
+      return await fn()
+    } catch (e: unknown) {
+      const err      = e as { status?: number }
+      const retryable = err.status === 429 || err.status === 529 || (err.status ?? 0) >= 500
+      if (!retryable || i === maxRetries - 1) throw e
+      const delay = Math.min(2_000 * Math.pow(2, i), 60_000)
+      onRetry(i + 1, delay)
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, delay)
+        signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Task cancelled.')) }, { once: true })
+      })
+    }
+  }
+  throw new Error('Max retries exceeded')
+}
+
+// ── Context files ─────────────────────────────────────────────────────────────
+function readContextFiles(repoPath: string): string {
+  const files = ['CLAUDE.md', 'AGENTS.md', 'README.md', '.raziel/context.md']
+  const parts: string[] = []
+  for (const file of files) {
+    const p = path.join(repoPath, file)
+    if (fs.existsSync(p)) parts.push(`=== ${file} ===\n${fs.readFileSync(p, 'utf-8')}`)
+  }
+  return parts.join('\n\n')
+}
+
+// ── System prompt ─────────────────────────────────────────────────────────────
 function buildSystemPrompt(params: {
   context:       string
   memory:        Record<string, string>
@@ -130,8 +172,9 @@ function buildSystemPrompt(params: {
   workflow:      string
   roleContext:   string
   issueContent?: string
+  isResume:      boolean
 }): string {
-  const { context, memory, pastTasks, workflow, roleContext, issueContent } = params
+  const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume } = params
 
   const memoryBlock = Object.keys(memory).length > 0
     ? `\n\nREPO MEMORY (what you know about this codebase):\n${Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
@@ -145,13 +188,17 @@ function buildSystemPrompt(params: {
     ? `\n\nLINKED GITHUB ISSUE:\n${issueContent}`
     : ''
 
+  const resumeBlock = isResume
+    ? `\n\n⚠ RESUMED TASK: This task was interrupted and is continuing from a saved checkpoint. Review the conversation history above to understand what was already done, then continue from where you left off. Do NOT repeat work already completed.`
+    : ''
+
   const workflowGuide: Record<string, string> = {
-    feature:   'You are implementing a new feature. Plan it thoroughly. Write clean, typed code. No placeholders.',
-    fix:       'You are fixing a bug. Diagnose root cause first. Write minimal, targeted changes. Add a test if a test suite exists.',
-    refactor:  'You are improving existing code. Do not change behavior. Clean up, extract, rename, simplify. Run tests after to confirm nothing broke.',
-    audit:     'You are performing a security and code quality audit. Read widely, identify issues, write a detailed report, and fix what you can safely fix.',
-    strategy:  'You are researching and strategizing. Read the codebase, understand the problem space, and produce a detailed written plan. You may create or update docs but should not make code changes.',
-    test:      'You are writing or improving tests. Understand what exists, identify gaps, write comprehensive test cases, run them to confirm they pass.',
+    feature:  'You are implementing a new feature. Plan it thoroughly. Write clean, typed code. No placeholders.',
+    fix:      'You are fixing a bug. Diagnose root cause first. Write minimal, targeted changes. Add a test if a test suite exists.',
+    refactor: 'You are improving existing code. Do not change behavior. Clean up, extract, rename, simplify. Run tests after.',
+    audit:    'You are performing a security and code quality audit. Read widely, identify issues, write a detailed report, and fix what you can safely fix.',
+    strategy: 'You are researching and strategizing. Read the codebase, understand the problem space, and produce a detailed written plan. You may create or update docs but should not make code changes.',
+    test:     'You are writing or improving tests. Understand what exists, identify gaps, write comprehensive test cases, run them to confirm they pass.',
   }
 
   return `${roleContext}
@@ -230,16 +277,18 @@ WHEN STUCK OR UNCERTAIN
 • Never loop endlessly — if you are going in circles, explain why and stop
 • If implementing the task would require breaking security rules, stop and explain in task_complete
 
-${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}`
+${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}${resumeBlock}`
 }
 
+// ── Main agent loop ───────────────────────────────────────────────────────────
 export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?: AbortSignal): Promise<void> {
-  const { taskId, repoPath, description, branch, workflow, role, repoId, issueNumber, github } = task
+  const { taskId, repoPath, description, branch, workflow, role, repoId, issueNumber, github, checkpointMessages } = task
   const roleDefinition = ROLES[role ?? DEFAULT_ROLE]
+  const isResume       = !!(checkpointMessages?.length)
   let worktreePath: string | null = null
 
   try {
-    onEvent({ type: 'thinking', message: `Initializing worktree on branch: ${branch}` })
+    onEvent({ type: 'thinking', message: isResume ? `Resuming from checkpoint (${checkpointMessages!.length} messages saved)…` : `Initializing worktree on branch: ${branch}` })
     worktreePath = setupWorktree(repoPath, branch)
 
     const context    = readContextFiles(repoPath)
@@ -249,58 +298,58 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     let issueContent: string | undefined
     if (issueNumber && repoId) {
       const cached = getIssue(repoId, issueNumber)
-      if (cached) {
-        issueContent = `#${cached.number}: ${cached.title}\n\n${cached.body ?? ''}`
-      }
+      if (cached) issueContent = `#${cached.number}: ${cached.title}\n\n${cached.body ?? ''}`
     }
 
     const systemPrompt = buildSystemPrompt({
-      context, memory, pastTasks, workflow,
-      roleContext: roleDefinition.systemContext,
+      context, memory, pastTasks, workflow, isResume,
+      roleContext:  roleDefinition.systemContext,
       issueContent,
     })
 
     const roleTools = TOOLS.filter((t) => roleDefinition.allowedTools.includes(t.name))
 
-    const messages: Anthropic.MessageParam[] = [
-      {
-        role:    'user',
-        content: `Task: ${description}${issueNumber ? `\n\nLinked issue: #${issueNumber}` : ''}`,
-      },
-    ]
+    // Load checkpoint or start fresh
+    const messages: Anthropic.MessageParam[] = isResume
+      ? (checkpointMessages as Anthropic.MessageParam[])
+      : [{ role: 'user', content: `Task: ${description}${issueNumber ? `\n\nLinked issue: #${issueNumber}` : ''}` }]
 
     const toolCtx: ToolContext = { worktreePath, repoId, taskId, github }
 
-    let iterations     = 0
-    const MAX          = 40
-    let planCreated    = false
-    let buildVerified  = false
-    let securityClean  = false
-    const extraGatesMet = new Map<string, boolean>(
-      roleDefinition.extraGates.map((g) => [g, false])
-    )
+    let iterations      = 0
+    const MAX           = 40
+    let planCreated     = false
+    let buildVerified   = false
+    let securityClean   = false
+    const extraGatesMet = new Map<string, boolean>(roleDefinition.extraGates.map((g) => [g, false]))
     let totalInputTokens  = 0
     let totalOutputTokens = 0
 
-    // Sonnet 4.6 pricing per million tokens
+    // Stuck-loop detection: track recent (tool, input-sig) pairs
+    const recentCalls: string[] = []
+
     const INPUT_COST_PER_M  = 3.00
     const OUTPUT_COST_PER_M = 15.00
 
     while (iterations < MAX) {
       iterations++
 
-      if (signal?.aborted) {
-        onEvent({ type: 'error', message: 'Task cancelled.' })
-        return
-      }
+      if (signal?.aborted) { onEvent({ type: 'error', message: 'Task cancelled.' }); return }
 
-      const response = await anthropic.messages.create({
-        model:      'claude-sonnet-4-6',
-        max_tokens: 8096,
-        system:     systemPrompt,
-        tools:      roleTools as unknown as Anthropic.Tool[],
-        messages,
-      })
+      const response = await callWithBackoff(
+        () => anthropic.messages.create({
+          model:      'claude-sonnet-4-6',
+          max_tokens: 8096,
+          system:     systemPrompt,
+          tools:      roleTools as unknown as Anthropic.Tool[],
+          messages,
+        }),
+        (attempt, delayMs) => onEvent({
+          type:    'thinking',
+          message: `Rate limited — waiting ${delayMs / 1000}s then retrying (attempt ${attempt}/5)…`,
+        }),
+        signal,
+      )
 
       const toolUses   = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
       const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -315,79 +364,68 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         onEvent({ type: 'thinking', message: textBlocks.map((b) => b.text).join('\n') })
       }
 
-      // Gate: enforce plan before any write/execute
+      // ── Stuck-loop detection ──────────────────────────────────────────────
+      for (const t of toolUses) {
+        const sig = `${t.name}:${JSON.stringify(t.input).slice(0, 150)}`
+        recentCalls.push(sig)
+      }
+      if (recentCalls.length > 12) recentCalls.splice(0, recentCalls.length - 12)
+
+      if (recentCalls.length >= 6) {
+        const counts = new Map<string, number>()
+        for (const s of recentCalls) counts.set(s, (counts.get(s) ?? 0) + 1)
+        const stuck = [...counts.entries()].find(([, n]) => n >= 3)
+        if (stuck) {
+          const toolName = stuck[0].split(':')[0]
+          onEvent({ type: 'error', message: `Stuck loop detected — "${toolName}" was called 3× with the same input. Stopping to save your API spend. Adjust the task description and retry; RAZ will resume from the checkpoint.` })
+          return
+        }
+      }
+
+      // ── Gate: plan before writes ──────────────────────────────────────────
       const writingWithoutPlan = !planCreated && toolUses.some((t) =>
         ['write_file', 'execute_bash', 'run_build', 'run_tests', 'run_lint'].includes(t.name)
       )
       if (writingWithoutPlan) {
         messages.push({ role: 'assistant', content: response.content })
-        messages.push({
-          role: 'user', content: [{
-            type: 'tool_result',
-            tool_use_id: toolUses[0].id,
-            content: 'ERROR: You must call create_plan before making any changes. Create your plan first.',
-          }],
-        })
+        messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUses[0].id, content: 'ERROR: You must call create_plan before making any changes.' }] })
+        saveTaskMessages(taskId, messages)
         continue
       }
 
-      // Check for completion
+      // ── Completion check ──────────────────────────────────────────────────
       const completeCall = toolUses.find((t) => t.name === 'task_complete')
       if (completeCall) {
         const inp = completeCall.input as { summary: string; files_changed: string[]; notes?: string }
 
         if (roleDefinition.buildRequired && !buildVerified && workflow !== 'strategy' && workflow !== 'audit') {
           messages.push({ role: 'assistant', content: response.content })
-          messages.push({
-            role: 'user', content: [{
-              type: 'tool_result',
-              tool_use_id: completeCall.id,
-              content: 'ERROR: You must call run_build before task_complete to verify there are no TypeScript or build errors.',
-            }],
-          })
+          messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: completeCall.id, content: 'ERROR: You must call run_build before task_complete.' }] })
+          saveTaskMessages(taskId, messages)
           continue
         }
 
         if (roleDefinition.securityRequired && !securityClean) {
           messages.push({ role: 'assistant', content: response.content })
-          messages.push({
-            role: 'user', content: [{
-              type: 'tool_result',
-              tool_use_id: completeCall.id,
-              content: 'ERROR: You must call security_scan before task_complete.',
-            }],
-          })
+          messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: completeCall.id, content: 'ERROR: You must call security_scan before task_complete.' }] })
+          saveTaskMessages(taskId, messages)
           continue
         }
 
         const unmetGates = roleDefinition.extraGates.filter((g) => !extraGatesMet.get(g))
         if (unmetGates.length > 0) {
           messages.push({ role: 'assistant', content: response.content })
-          messages.push({
-            role: 'user', content: [{
-              type: 'tool_result',
-              tool_use_id: completeCall.id,
-              content: `ERROR: You must call the following tools before task_complete: ${unmetGates.join(', ')}`,
-            }],
-          })
+          messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: completeCall.id, content: `ERROR: You must call the following tools before task_complete: ${unmetGates.join(', ')}` }] })
+          saveTaskMessages(taskId, messages)
           continue
         }
 
+        const costUsdFinal = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
         try {
-          const costUsdFinal = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
           commitChanges(worktreePath, inp.summary, workflow, roleDefinition.commitPrefix)
-          onEvent({
-            type:    'complete',
-            message: inp.summary,
-            data:    { files_changed: inp.files_changed, notes: inp.notes, branch, costUsd: costUsdFinal, inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
-          })
+          onEvent({ type: 'complete', message: inp.summary, data: { files_changed: inp.files_changed, notes: inp.notes, branch, costUsd: costUsdFinal, inputTokens: totalInputTokens, outputTokens: totalOutputTokens } })
         } catch {
-          const costUsdFinal = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
-          onEvent({
-            type:    'complete',
-            message: inp.summary,
-            data:    { files_changed: inp.files_changed, notes: inp.notes, branch, commit_skipped: true, costUsd: costUsdFinal, inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
-          })
+          onEvent({ type: 'complete', message: inp.summary, data: { files_changed: inp.files_changed, notes: inp.notes, branch, commit_skipped: true, costUsd: costUsdFinal, inputTokens: totalInputTokens, outputTokens: totalOutputTokens } })
         }
         return
       }
@@ -397,7 +435,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         return
       }
 
-      // Execute tools
+      // ── Execute tools ─────────────────────────────────────────────────────
       const toolResults: Anthropic.ToolResultBlockParam[] = []
 
       for (const toolUse of toolUses) {
@@ -405,26 +443,23 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
 
         const result = await executeTool(toolUse.name as ToolName, toolUse.input as Record<string, unknown>, toolCtx)
 
-        if (toolUse.name === 'create_plan')   planCreated   = true
-        if (toolUse.name === 'run_build')      buildVerified = true
-        if (toolUse.name === 'security_scan')  securityClean = !result.startsWith('SECURITY ALERT')
+        if (toolUse.name === 'create_plan')  { planCreated   = true; onEvent({ type: 'plan', message: (toolUse.input as Record<string, unknown>).plan as string }) }
+        if (toolUse.name === 'run_build')      buildVerified  = true
+        if (toolUse.name === 'security_scan')  securityClean  = !result.startsWith('SECURITY ALERT')
         if (extraGatesMet.has(toolUse.name))   extraGatesMet.set(toolUse.name, true)
 
-        // Surface plan to UI
-        if (toolUse.name === 'create_plan') {
-          onEvent({ type: 'plan', message: (toolUse.input as Record<string, unknown>).plan as string })
-        }
-
         onEvent({ type: 'tool_result', message: result.slice(0, 300) })
-
         toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result })
       }
 
       messages.push({ role: 'assistant', content: response.content })
       messages.push({ role: 'user', content: toolResults })
+
+      // ── Checkpoint: persist messages after every iteration ────────────────
+      saveTaskMessages(taskId, messages)
     }
 
-    onEvent({ type: 'error', message: 'Agent hit max iterations (40). Task incomplete.' })
+    onEvent({ type: 'error', message: 'Agent hit max iterations (40). Task incomplete. Retry to resume from the last checkpoint.' })
   } catch (err) {
     onEvent({ type: 'error', message: `Agent error: ${err}` })
   } finally {

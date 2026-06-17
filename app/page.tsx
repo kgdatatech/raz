@@ -295,7 +295,7 @@ export default function RazDashboard() {
     setSelectedRepo(updated)
   }
 
-  async function runTask(params: { description: string; role: RoleId; workflow: string; issueNumber?: number }) {
+  async function runTask(params: { description: string; role: RoleId; workflow: string; issueNumber?: number; resumeTaskId?: string }) {
     if (!selectedRepo) return
     if (!selectedRepo.local_path && !localPath.trim()) { alert('Set the local repo path first.'); return }
     if (localPath && localPath !== selectedRepo.local_path) await saveLocalPath()
@@ -320,12 +320,13 @@ export default function RazDashboard() {
         headers: { 'Content-Type': 'application/json' },
         signal:  abort.signal,
         body:    JSON.stringify({
-          owner:       selectedRepo.github_owner,
-          repo:        selectedRepo.github_repo,
-          description: params.description,
-          workflow:    params.workflow,
-          role:        params.role,
-          issueNumber: params.issueNumber,
+          owner:        selectedRepo.github_owner,
+          repo:         selectedRepo.github_repo,
+          description:  params.description,
+          workflow:     params.workflow,
+          role:         params.role,
+          issueNumber:  params.issueNumber,
+          resumeTaskId: params.resumeTaskId,
         }),
       })
 
@@ -391,7 +392,7 @@ export default function RazDashboard() {
     setRole(retryRole)
     setWorkflow(retryWorkflow)
     setTask(t.description)
-    if (!running) runTask({ description: t.description, role: retryRole, workflow: retryWorkflow })
+    if (!running) runTask({ description: t.description, role: retryRole, workflow: retryWorkflow, resumeTaskId: t.id })
   }
 
   const canRun   = !running && !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())

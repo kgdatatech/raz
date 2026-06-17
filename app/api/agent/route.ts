@@ -2,14 +2,14 @@ import { NextRequest } from 'next/server'
 import { randomUUID } from 'crypto'
 import { runAgent } from '@/lib/agent'
 import { pushBranchAndOpenPR } from '@/lib/github'
-import { getRepo, upsertRepo, createTask, completeTask, failTask } from '@/lib/db'
+import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning } from '@/lib/db'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from '@/lib/roles'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 300
 
 export async function POST(req: NextRequest) {
-  const { owner, repo, description, workflow = 'feature', issueNumber, role: rawRole } = await req.json()
+  const { owner, repo, description, workflow = 'feature', issueNumber, role: rawRole, resumeTaskId } = await req.json()
   const role: RoleId = ROLE_IDS.includes(rawRole) ? rawRole : DEFAULT_ROLE
 
   if (!owner || !repo || !description) {
@@ -21,15 +21,30 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'Local path not configured for this repo.' }), { status: 400 })
   }
 
-  const taskId    = randomUUID()
-  const taskSlug  = description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30).replace(/-$/, '')
-  const roleSlug  = role.toLowerCase().replace('-', '-')  // e.g. raz-dev
-  const branch    = `${roleSlug}/${taskSlug}-${taskId.slice(0, 6)}`
-  const repoPath  = repoRow.local_path
+  const repoPath   = repoRow.local_path
   const baseBranch = repoRow.default_branch
 
-  upsertRepo(owner, repo, baseBranch, repoPath)
-  createTask(taskId, repoRow.id, description, branch, workflow, issueNumber, role)
+  let taskId: string
+  let branch: string
+  let checkpointMessages: unknown[] | null = null
+
+  if (resumeTaskId) {
+    const existing = getTask(resumeTaskId)
+    if (!existing) {
+      return new Response(JSON.stringify({ error: 'Task not found for resume.' }), { status: 404 })
+    }
+    taskId             = resumeTaskId
+    branch             = existing.branch
+    checkpointMessages = getTaskMessages(resumeTaskId)
+    resetTaskToRunning(taskId)
+  } else {
+    taskId = randomUUID()
+    const taskSlug = description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30).replace(/-$/, '')
+    const roleSlug = role.toLowerCase()
+    branch         = `${roleSlug}/${taskSlug}-${taskId.slice(0, 6)}`
+    upsertRepo(owner, repo, baseBranch, repoPath)
+    createTask(taskId, repoRow.id, description, branch, workflow, issueNumber, role)
+  }
 
   const encoder    = new TextEncoder()
   const abort      = new AbortController()
@@ -54,9 +69,10 @@ export async function POST(req: NextRequest) {
             branch,
             workflow,
             role,
-            repoId:      repoRow.id,
+            repoId:             repoRow.id,
             issueNumber,
-            github:      { owner, repo },
+            github:             { owner, repo },
+            checkpointMessages: checkpointMessages ?? undefined,
           },
           (event) => {
             send(event)
