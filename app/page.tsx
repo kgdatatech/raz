@@ -41,12 +41,12 @@ interface LogEntry {
 }
 
 const WORKFLOWS = [
-  { value: 'feature',  label: 'Feature',  desc: 'Build new functionality' },
-  { value: 'fix',      label: 'Fix',      desc: 'Debug and resolve an issue' },
-  { value: 'refactor', label: 'Refactor', desc: 'Improve code without changing behavior' },
-  { value: 'audit',    label: 'Audit',    desc: 'Security and code quality review' },
-  { value: 'test',     label: 'Test',     desc: 'Write or improve tests' },
-  { value: 'strategy', label: 'Strategy', desc: 'Research and plan — no code changes' },
+  { value: 'feature',  label: 'Feature'  },
+  { value: 'fix',      label: 'Fix'      },
+  { value: 'refactor', label: 'Refactor' },
+  { value: 'audit',    label: 'Audit'    },
+  { value: 'test',     label: 'Test'     },
+  { value: 'strategy', label: 'Strategy' },
 ]
 
 const ROLE_DEFAULT_WORKFLOW: Record<RoleId, string> = {
@@ -57,14 +57,22 @@ const ROLE_DEFAULT_WORKFLOW: Record<RoleId, string> = {
   'RAZ-Data': 'feature',
 }
 
+const ROLE_WORKFLOWS: Record<RoleId, string[]> = {
+  'RAZ-Dev':  ['feature', 'fix', 'refactor', 'test', 'strategy'],
+  'RAZ-Sec':  ['audit', 'strategy'],
+  'RAZ-QA':   ['test', 'fix'],
+  'RAZ-Ops':  ['audit', 'strategy'],
+  'RAZ-Data': ['feature', 'fix', 'refactor'],
+}
+
 const TYPE_STYLES: Record<LogEntry['type'], string> = {
   thinking:    'text-gray-500',
   tool_call:   'text-blue-600',
   tool_result: 'text-gray-400',
   plan:        'text-indigo-600',
   usage:       'text-gray-300',
-  complete:    'text-green-700',
-  error:       'text-red-600',
+  complete:    'text-green-600',
+  error:       'text-red-500',
 }
 
 const TYPE_PREFIX: Record<LogEntry['type'], string> = {
@@ -89,68 +97,33 @@ const STATUS_TEXT: Record<string, string> = {
   running:  'text-yellow-600',
 }
 
-function TaskCard({ task: t }: { task: TaskRow }) {
-  const [expanded, setExpanded] = useState(false)
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <div className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
-          <span className={`text-[10px] font-bold uppercase tracking-wider ${STATUS_TEXT[t.status] ?? 'text-gray-400'}`}>{t.status}</span>
-          <span className="text-[10px] text-gray-300 ml-auto">{t.role ? `${t.role} · ` : ''}{t.workflow ?? 'feature'}</span>
-        </div>
-        <p className="text-xs text-gray-700 leading-snug">{t.description}</p>
-        {t.issue_number && <span className="text-[10px] text-indigo-500">Issue #{t.issue_number}</span>}
-        {t.pr_url && (
-          <a href={t.pr_url} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 hover:text-blue-800 underline underline-offset-2 block truncate">
-            View Pull Request
-          </a>
-        )}
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] text-gray-300">{new Date(t.created_at).toLocaleString()}</span>
-          {t.summary && (
-            <button
-              onClick={() => setExpanded((v) => !v)}
-              className="text-[11px] text-gray-400 hover:text-gray-700 transition-colors"
-            >
-              {expanded ? 'collapse ↑' : 'read report ↓'}
-            </button>
-          )}
-        </div>
-      </div>
-      {expanded && t.summary && (
-        <div className="border-t border-gray-100 bg-gray-50 px-4 py-4">
-          <pre className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed font-sans">{t.summary}</pre>
-        </div>
-      )}
-    </div>
-  )
-}
-
-export default function RazielDashboard() {
-  const [owner,        setOwner]        = useState('')
-  const [repos,        setRepos]        = useState<RepoRow[]>([])
-  const [selectedRepo, setSelectedRepo] = useState<RepoRow | null>(null)
-  const [localPath,    setLocalPath]    = useState('')
-  const [role,         setRole]         = useState<RoleId>(DEFAULT_ROLE)
-  const [workflow,     setWorkflow]     = useState('feature')
-  const [issues,       setIssues]       = useState<IssueRow[]>([])
+export default function RazDashboard() {
+  const [owner,         setOwner]         = useState('')
+  const [repos,         setRepos]         = useState<RepoRow[]>([])
+  const [selectedRepo,  setSelectedRepo]  = useState<RepoRow | null>(null)
+  const [localPath,     setLocalPath]     = useState('')
+  const [role,          setRole]          = useState<RoleId>(DEFAULT_ROLE)
+  const [workflow,      setWorkflow]      = useState('feature')
+  const [issues,        setIssues]        = useState<IssueRow[]>([])
   const [selectedIssue, setSelectedIssue] = useState<IssueRow | null>(null)
   const [syncingIssues, setSyncingIssues] = useState(false)
-  const [task,         setTask]         = useState('')
-  const [running,      setRunning]      = useState(false)
-  const [log,          setLog]          = useState<LogEntry[]>([])
-  const [prUrl,        setPrUrl]        = useState<string | null>(null)
-  const [tasks,        setTasks]        = useState<TaskRow[]>([])
-  const [loadingRepos, setLoadingRepos] = useState(true)
-  const [activePlan,   setActivePlan]   = useState<string | null>(null)
-  const [elapsed,      setElapsed]      = useState(0)
-  const [liveCost,     setLiveCost]     = useState<number>(0)
-  const [finalCost,    setFinalCost]    = useState<number | null>(null)
-  const logRef    = useRef<HTMLDivElement>(null)
-  const abortRef  = useRef<AbortController | null>(null)
-  const startRef  = useRef<number>(0)
-  const timerRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [task,          setTask]          = useState('')
+  const [running,       setRunning]       = useState(false)
+  const [log,           setLog]           = useState<LogEntry[]>([])
+  const [prUrl,         setPrUrl]         = useState<string | null>(null)
+  const [tasks,         setTasks]         = useState<TaskRow[]>([])
+  const [loadingRepos,  setLoadingRepos]  = useState(true)
+  const [activePlan,    setActivePlan]    = useState<string | null>(null)
+  const [elapsed,       setElapsed]       = useState(0)
+  const [liveCost,      setLiveCost]      = useState<number>(0)
+  const [finalCost,     setFinalCost]     = useState<number | null>(null)
+  const [selectedTask,  setSelectedTask]  = useState<TaskRow | null>(null)
+  const [planOpen,      setPlanOpen]      = useState(false)
+
+  const logRef   = useRef<HTMLDivElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const startRef = useRef<number>(0)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     fetch('/api/repos')
@@ -168,11 +141,8 @@ export default function RazielDashboard() {
     loadTasks(selectedRepo.id)
   }, [selectedRepo])
 
-  // Auto-sync issues when fix workflow selected and repo chosen
   useEffect(() => {
-    if (workflow === 'fix' && selectedRepo && issues.length === 0) {
-      loadIssues(selectedRepo)
-    }
+    if (workflow === 'fix' && selectedRepo && issues.length === 0) loadIssues(selectedRepo)
   }, [workflow, selectedRepo])
 
   function loadTasks(repoId: number) {
@@ -180,10 +150,8 @@ export default function RazielDashboard() {
   }
 
   async function loadIssues(repo: RepoRow) {
-    // Try local DB first
     const cached = await fetch(`/api/issues?repoId=${repo.id}`).then((r) => r.json()).catch(() => [])
     if (cached.length > 0) { setIssues(cached); return }
-    // Sync from GitHub
     syncIssues(repo)
   }
 
@@ -203,7 +171,7 @@ export default function RazielDashboard() {
 
   function appendLog(entry: Omit<LogEntry, 'ts'>) {
     setLog((prev) => [...prev, { ...entry, ts: Date.now() }])
-    if (entry.type === 'plan') setActivePlan(entry.message)
+    if (entry.type === 'plan') { setActivePlan(entry.message); setPlanOpen(true) }
     if (entry.type === 'usage') setLiveCost((entry.data?.costUsd as number) ?? 0)
     if (entry.type === 'complete') setFinalCost((entry.data?.costUsd as number) ?? liveCost)
     setTimeout(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' }), 50)
@@ -236,6 +204,7 @@ export default function RazielDashboard() {
     setLog([])
     setPrUrl(null)
     setActivePlan(null)
+    setPlanOpen(false)
     setLiveCost(0)
     setFinalCost(null)
 
@@ -286,285 +255,389 @@ export default function RazielDashboard() {
   }
 
   const canRun = !running && !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())
+  const activeRole = ROLES[role]
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
+    <div className="h-screen flex flex-col bg-gray-50 text-gray-900 font-sans overflow-hidden">
 
-      {/* Nav */}
-      <header className="bg-white border-b border-gray-200 px-8 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-7 h-7 rounded bg-gray-900 flex items-center justify-center">
-            <span className="text-white text-[10px] font-bold tracking-widest">RZ</span>
+      {/* ── Nav ─────────────────────────────────────────────────────────── */}
+      <header className="h-11 flex-shrink-0 bg-white border-b border-gray-200 flex items-center justify-between px-4">
+        <div className="flex items-center gap-2.5">
+          <div className="w-6 h-6 rounded bg-gray-900 flex items-center justify-center">
+            <span className="text-white text-[9px] font-bold tracking-widest">RZ</span>
           </div>
-          <div>
-            <div className="text-sm font-semibold text-gray-900 leading-none">RAZ</div>
-            <div className="text-[10px] text-gray-400 mt-0.5">Archon Systems · Agent v2</div>
-          </div>
+          <span className="text-sm font-semibold text-gray-900">RAZ</span>
+          <span className="text-[10px] text-gray-400">Archon Systems · Agent v2</span>
         </div>
         {owner && (
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-green-500" />
+          <div className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
             <span className="text-xs text-gray-500">{owner}</span>
           </div>
         )}
       </header>
 
-      <main className="max-w-6xl mx-auto px-8 py-10">
-        <div className="grid grid-cols-3 gap-8">
-          <div className="col-span-2 space-y-5">
+      {/* ── Body ────────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 min-h-0">
 
-            {/* Repo + Workflow */}
-            <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Target</h2>
+        {/* ── Left panel ──────────────────────────────────────────────── */}
+        <div className="w-72 flex-shrink-0 flex flex-col border-r border-gray-200 bg-white overflow-y-auto">
+          <div className="flex flex-col gap-3 p-3">
 
-              {/* Repo */}
+            {/* Repo */}
+            <div>
+              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Repository</label>
+              {loadingRepos ? (
+                <div className="h-8 bg-gray-100 rounded-md animate-pulse" />
+              ) : (
+                <select
+                  value={selectedRepo?.id ?? ''}
+                  onChange={(e) => setSelectedRepo(repos.find((r) => r.id === Number(e.target.value)) ?? null)}
+                  className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900"
+                >
+                  <option value="">Select repository...</option>
+                  {repos.map((r) => (
+                    <option key={r.id} value={r.id}>{r.github_repo}</option>
+                  ))}
+                </select>
+              )}
+              {selectedRepo && (
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">
+                    {selectedRepo.default_branch}
+                  </span>
+                  {selectedRepo.local_path
+                    ? <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5 font-mono truncate max-w-[200px]">{selectedRepo.local_path}</span>
+                    : <span className="text-[9px] bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 border border-amber-200">path not set</span>
+                  }
+                </div>
+              )}
+            </div>
+
+            {/* Local path setup (one-time) */}
+            {selectedRepo && !selectedRepo.local_path && (
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1.5">Repository</label>
-                {loadingRepos ? (
-                  <div className="text-sm text-gray-400 animate-pulse">Connecting to GitHub...</div>
+                <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Local Path</label>
+                <div className="flex gap-1.5">
+                  <input
+                    value={localPath}
+                    onChange={(e) => setLocalPath(e.target.value)}
+                    placeholder={`C:\\Projects\\${selectedRepo.github_repo}`}
+                    className="flex-1 bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900"
+                  />
+                  <button onClick={saveLocalPath} className="px-2.5 py-1.5 bg-gray-900 text-white text-[10px] font-medium rounded-md hover:bg-gray-700 transition-colors">
+                    Save
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Divider */}
+            <div className="border-t border-gray-100" />
+
+            {/* Role */}
+            <div>
+              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Agent Role</label>
+              <div className="flex gap-1">
+                {ROLE_IDS.map((r) => {
+                  const def    = ROLES[r]
+                  const active = role === r
+                  return (
+                    <button
+                      key={r}
+                      onClick={() => {
+                        setRole(r)
+                        setWorkflow((prev) =>
+                          ROLE_WORKFLOWS[r].includes(prev) ? prev : ROLE_DEFAULT_WORKFLOW[r]
+                        )
+                      }}
+                      title={def.description}
+                      className="flex-1 py-1.5 rounded-md border text-[9px] font-bold tracking-wide transition-all"
+                      style={active
+                        ? { background: def.color, borderColor: def.color, color: '#fff' }
+                        : { background: '#fff', borderColor: '#e5e7eb', color: '#9ca3af' }
+                      }
+                    >
+                      {def.badge}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[9px] text-gray-400 mt-1 leading-snug">{activeRole.description}</p>
+            </div>
+
+            {/* Workflow */}
+            <div>
+              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Workflow</label>
+              <div className="flex flex-wrap gap-1">
+                {WORKFLOWS.filter((w) => ROLE_WORKFLOWS[role].includes(w.value)).map((w) => (
+                  <button
+                    key={w.value}
+                    onClick={() => setWorkflow(w.value)}
+                    className={`py-1.5 px-3 rounded-md border text-[10px] font-medium transition-colors ${
+                      workflow === w.value
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-500 border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Issue picker */}
+            {workflow === 'fix' && selectedRepo && (
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Linked Issue</label>
+                  <button
+                    onClick={() => syncIssues(selectedRepo)}
+                    disabled={syncingIssues}
+                    className="text-[9px] text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+                  >
+                    {syncingIssues ? 'syncing...' : '↻ sync'}
+                  </button>
+                </div>
+                {issues.length === 0 ? (
+                  <p className="text-[10px] text-gray-400">{syncingIssues ? 'Loading...' : 'No open issues.'}</p>
                 ) : (
                   <select
-                    value={selectedRepo?.id ?? ''}
-                    onChange={(e) => setSelectedRepo(repos.find((r) => r.id === Number(e.target.value)) ?? null)}
-                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900"
+                    value={selectedIssue?.id ?? ''}
+                    onChange={(e) => setSelectedIssue(issues.find((i) => i.id === Number(e.target.value)) ?? null)}
+                    className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900"
                   >
-                    <option value="">Select a repository...</option>
-                    {repos.map((r) => (
-                      <option key={r.id} value={r.id}>{r.github_repo}</option>
+                    <option value="">No issue — describe below</option>
+                    {issues.map((i) => (
+                      <option key={i.id} value={i.id}>#{i.number} — {i.title}</option>
                     ))}
                   </select>
                 )}
               </div>
+            )}
 
-              {/* Repo meta */}
-              {selectedRepo && (
-                <div className="flex flex-wrap gap-2">
-                  <span className="inline-flex items-center gap-1 bg-gray-100 text-gray-500 text-[11px] rounded-full px-3 py-1">
-                    <span className="text-gray-400">branch</span> {selectedRepo.default_branch}
-                  </span>
-                  {selectedRepo.local_path
-                    ? <span className="inline-flex items-center bg-gray-100 text-gray-500 text-[11px] rounded-full px-3 py-1 font-mono">{selectedRepo.local_path}</span>
-                    : <span className="inline-flex items-center bg-amber-50 text-amber-700 text-[11px] rounded-full px-3 py-1 border border-amber-200">local path not set</span>
-                  }
-                </div>
-              )}
-
-              {/* One-time local path */}
-              {selectedRepo && !selectedRepo.local_path && (
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1.5">
-                    Local path <span className="text-gray-400 font-normal">(one-time setup)</span>
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      value={localPath}
-                      onChange={(e) => setLocalPath(e.target.value)}
-                      placeholder={`C:\\Users\\keanu\\Projects\\${selectedRepo.github_repo}`}
-                      className="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900"
-                    />
-                    <button onClick={saveLocalPath} className="px-4 py-2 bg-gray-900 text-white text-xs font-medium rounded-lg hover:bg-gray-700 transition-colors">
-                      Save
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Role */}
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-2">Agent Role</label>
-                <div className="grid grid-cols-5 gap-2">
-                  {ROLE_IDS.map((r) => {
-                    const def = ROLES[r]
-                    const active = role === r
-                    return (
-                      <button
-                        key={r}
-                        onClick={() => { setRole(r); setWorkflow(ROLE_DEFAULT_WORKFLOW[r]) }}
-                        className={`text-left px-3 py-2.5 rounded-lg border text-xs transition-colors ${
-                          active ? 'border-transparent text-white' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'
-                        }`}
-                        style={active ? { background: def.color, borderColor: def.color } : {}}
-                      >
-                        <div className="font-bold tracking-wide">{def.badge}</div>
-                        <div className={`text-[10px] mt-0.5 ${active ? 'text-white/80' : 'text-gray-400'}`}>{def.description.split('.')[0]}</div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* Workflow */}
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-2">Workflow</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {WORKFLOWS.map((w) => (
-                    <button
-                      key={w.value}
-                      onClick={() => setWorkflow(w.value)}
-                      className={`text-left px-3 py-2.5 rounded-lg border text-xs transition-colors ${
-                        workflow === w.value
-                          ? 'bg-gray-900 text-white border-gray-900'
-                          : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'
-                      }`}
-                    >
-                      <div className="font-semibold">{w.label}</div>
-                      <div className={`text-[10px] mt-0.5 ${workflow === w.value ? 'text-gray-300' : 'text-gray-400'}`}>{w.desc}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Issue picker — shown when fix workflow */}
-              {workflow === 'fix' && selectedRepo && (
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-xs font-medium text-gray-700">Linked Issue <span className="text-gray-400 font-normal">(optional)</span></label>
-                    <button
-                      onClick={() => syncIssues(selectedRepo)}
-                      disabled={syncingIssues}
-                      className="text-[11px] text-blue-600 hover:text-blue-800 disabled:text-gray-400"
-                    >
-                      {syncingIssues ? 'syncing...' : 'sync from GitHub'}
-                    </button>
-                  </div>
-                  {issues.length === 0 ? (
-                    <div className="text-xs text-gray-400">{syncingIssues ? 'Loading issues...' : 'No open issues found.'}</div>
-                  ) : (
-                    <select
-                      value={selectedIssue?.id ?? ''}
-                      onChange={(e) => setSelectedIssue(issues.find((i) => i.id === Number(e.target.value)) ?? null)}
-                      className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900"
-                    >
-                      <option value="">No issue — describe the fix below</option>
-                      {issues.map((i) => (
-                        <option key={i.id} value={i.id}>#{i.number} — {i.title}</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-              )}
-            </div>
+            <div className="border-t border-gray-100" />
 
             {/* Task */}
-            <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Task</h2>
+            <div>
+              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Task</label>
               <textarea
                 value={task}
                 onChange={(e) => setTask(e.target.value)}
                 rows={5}
-                placeholder={`Describe exactly what ${role} should do. Be specific — include file names, expected behavior, acceptance criteria, and any relevant context.`}
-                className="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 resize-none leading-relaxed"
+                placeholder={`What should ${role} do? Be specific — file names, expected behavior, acceptance criteria.`}
+                className="w-full bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 resize-none leading-relaxed"
               />
-              <div className="flex gap-2">
+            </div>
+
+            {/* Run / Stop */}
+            <div className="flex gap-1.5">
+              <button
+                onClick={handleRun}
+                disabled={!canRun}
+                className="flex-1 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-white"
+                style={{ background: canRun && !running ? activeRole.color : '#111827' }}
+              >
+                {running ? (
+                  <span className="flex items-center justify-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                    {role} working...
+                  </span>
+                ) : `Run ${role}`}
+              </button>
+              {running && (
                 <button
-                  onClick={handleRun}
-                  disabled={!canRun}
-                  className="flex-1 py-3 bg-gray-900 text-white font-semibold text-sm rounded-lg hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  onClick={() => { abortRef.current?.abort(); setRunning(false) }}
+                  className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-md hover:bg-red-700 transition-colors"
                 >
-                  {running ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                      {role} is working...
-                    </span>
-                  ) : `Run ${role}`}
+                  Stop
                 </button>
+              )}
+            </div>
+
+            {/* Plan (collapsible) */}
+            {activePlan && (
+              <div className="border border-indigo-200 rounded-md overflow-hidden">
+                <button
+                  onClick={() => setPlanOpen((v) => !v)}
+                  className="w-full flex items-center justify-between px-3 py-2 bg-indigo-50 text-[9px] font-semibold text-indigo-500 uppercase tracking-widest"
+                >
+                  <span>⊞ {role} Plan</span>
+                  <span>{planOpen ? '▲' : '▼'}</span>
+                </button>
+                {planOpen && (
+                  <div className="px-3 py-2 bg-white max-h-48 overflow-y-auto">
+                    <pre className="text-[10px] text-gray-700 whitespace-pre-wrap leading-relaxed font-sans">{activePlan}</pre>
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
+        </div>
+
+        {/* ── Right panel ─────────────────────────────────────────────── */}
+        <div className="flex-1 flex flex-col min-h-0">
+
+          {/* Agent Log */}
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center justify-between px-4">
+              <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Agent Log</span>
+              <div className="flex items-center gap-3">
+                {prUrl && (
+                  <a href={prUrl} target="_blank" rel="noreferrer" className="text-[10px] text-green-700 font-semibold underline underline-offset-2">
+                    ✓ View PR ↗
+                  </a>
+                )}
+                {(running || finalCost !== null) && (
+                  <span className="text-[10px] font-mono text-gray-400">${(finalCost ?? liveCost).toFixed(4)}</span>
+                )}
                 {running && (
-                  <button
-                    onClick={() => { abortRef.current?.abort(); setRunning(false) }}
-                    className="px-5 py-3 bg-red-600 text-white font-semibold text-sm rounded-lg hover:bg-red-700 transition-colors"
-                  >
-                    Stop
-                  </button>
+                  <>
+                    <span className="text-[10px] font-mono text-gray-400">
+                      {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
+                    </span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                  </>
                 )}
               </div>
             </div>
-
-            {/* Plan panel — appears when Raziel creates a plan */}
-            {activePlan && (
-              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
-                <div className="text-xs font-semibold text-indigo-500 uppercase tracking-widest mb-3">{role} Plan</div>
-                <pre className="text-xs text-indigo-900 whitespace-pre-wrap leading-relaxed font-sans">{activePlan}</pre>
-              </div>
-            )}
-
-            {/* PR Banner */}
-            {prUrl && (
-              <div className="bg-green-50 border border-green-200 rounded-xl px-5 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-green-500" />
-                  <span className="text-sm font-semibold text-green-800">Pull request ready for review</span>
+            <div ref={logRef} className="flex-1 overflow-y-auto p-3 space-y-px bg-gray-50 font-mono text-[10px]">
+              {log.length === 0 && !running && (
+                <div className="h-full flex items-center justify-center">
+                  <span className="text-xs text-gray-300">Select a repo, set a task, and run.</span>
                 </div>
-                <a href={prUrl} target="_blank" rel="noreferrer" className="text-sm text-green-700 underline underline-offset-2 ml-4">
-                  View PR
-                </a>
-              </div>
-            )}
-
-            {/* Agent Log */}
-            {log.length > 0 && (
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Agent Log</span>
-                  <div className="flex items-center gap-3">
-                    {(running || finalCost !== null) && (
-                      <span className="text-[11px] font-mono text-gray-400">
-                        ${(finalCost ?? liveCost).toFixed(4)}
-                      </span>
-                    )}
-                    {running && (
-                      <>
-                        <span className="text-[11px] text-gray-400 font-mono">
-                          {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
-                        </span>
-                        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                      </>
-                    )}
-                  </div>
+              )}
+              {log.map((entry, i) => (
+                <div key={i} className={`flex gap-2 leading-relaxed ${TYPE_STYLES[entry.type]}`}>
+                  <span className="shrink-0 text-[8px] text-gray-300 w-14 text-right pt-px">
+                    {new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                  <span className="shrink-0 w-3 text-center">{TYPE_PREFIX[entry.type]}</span>
+                  <span className="break-all">
+                    {entry.type === 'tool_call'
+                      ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? ` — ${JSON.stringify(entry.data.input).slice(0, 120)}` : ''}</>
+                      : entry.type === 'plan'
+                      ? <span className="text-indigo-500 font-medium">Plan created — see left panel</span>
+                      : entry.message}
+                  </span>
                 </div>
-                <div ref={logRef} className="p-4 h-80 overflow-y-auto space-y-1 bg-gray-50 font-mono text-xs">
-                  {log.map((entry, i) => (
-                    <div key={i} className={`flex gap-2 ${TYPE_STYLES[entry.type]}`}>
-                      <span className="shrink-0 text-[9px] text-gray-300 w-12 text-right leading-relaxed pt-px">
-                        {new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                      </span>
-                      <span className="shrink-0 w-3 text-center">{TYPE_PREFIX[entry.type]}</span>
-                      <span className="break-all leading-relaxed">
-                        {entry.type === 'tool_call'
-                          ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? ` — ${JSON.stringify(entry.data.input).slice(0, 100)}` : ''}</>
-                          : entry.type === 'plan'
-                          ? <span className="text-indigo-600 font-medium">Plan created — see panel above</span>
-                          : entry.message}
-                      </span>
-                    </div>
-                  ))}
-                  {running && (
-                    <div className="flex gap-2 text-gray-400 animate-pulse">
-                      <span className="w-4 text-right">·</span>
-                      <span>working...</span>
-                    </div>
-                  )}
+              ))}
+              {running && (
+                <div className="flex gap-2 text-gray-300 animate-pulse">
+                  <span className="w-14 text-right text-[8px]" />
+                  <span className="w-3 text-center">·</span>
+                  <span>working...</span>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
-          {/* Task History Sidebar */}
-          <div>
-            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">Task History</h2>
-            {tasks.length === 0 ? (
-              <div className="bg-white rounded-xl border border-gray-200 p-5 text-sm text-gray-400">
-                {selectedRepo ? 'No tasks yet.' : 'Select a repo.'}
+          {/* Task History */}
+          <div className="h-56 flex-shrink-0 border-t border-gray-200 flex flex-col">
+            <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center justify-between px-4">
+              <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Task History</span>
+              {tasks.length > 0 && (
+                <span className="text-[9px] text-gray-400 bg-gray-100 rounded-full px-2 py-0.5">{tasks.length}</span>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto bg-white divide-y divide-gray-100">
+              {tasks.length === 0 ? (
+                <div className="h-full flex items-center justify-center">
+                  <span className="text-xs text-gray-300">{selectedRepo ? 'No tasks yet.' : 'Select a repo.'}</span>
+                </div>
+              ) : tasks.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setSelectedTask(t)}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[9px] font-bold uppercase tracking-wide ${STATUS_TEXT[t.status] ?? 'text-gray-400'}`}>{t.status}</span>
+                      <span className="text-[9px] text-gray-400">{t.role ?? 'RAZ-Dev'} · {t.workflow ?? 'feature'}</span>
+                      <span className="text-[9px] text-gray-300 ml-auto">
+                        {new Date(t.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-gray-600 truncate mt-0.5">{t.description}</p>
+                  </div>
+                  <span className="text-gray-300 text-[10px] flex-shrink-0">›</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      {/* ── Task Detail Modal ──────────────────────────────────────────── */}
+      {selectedTask && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: 'rgba(0,0,0,0.45)' }}
+          onClick={() => setSelectedTask(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[82vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-200 flex-shrink-0">
+              <div className="flex items-center gap-2.5">
+                <span className={`w-2 h-2 rounded-full ${STATUS_DOT[selectedTask.status] ?? 'bg-gray-300'}`} />
+                <span className={`text-xs font-bold uppercase tracking-wide ${STATUS_TEXT[selectedTask.status] ?? 'text-gray-500'}`}>{selectedTask.status}</span>
+                <span className="text-xs text-gray-400">{selectedTask.role ?? 'RAZ-Dev'} · {selectedTask.workflow ?? 'feature'}</span>
+                {selectedTask.issue_number && (
+                  <span className="text-xs text-indigo-500">Issue #{selectedTask.issue_number}</span>
+                )}
               </div>
-            ) : (
-              <div className="space-y-3">
-                {tasks.map((t) => (
-                  <TaskCard key={t.id} task={t} />
-                ))}
+              <button onClick={() => setSelectedTask(null)} className="text-gray-400 hover:text-gray-700 text-base leading-none transition-colors">✕</button>
+            </div>
+
+            {/* Modal body */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+              <div>
+                <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Task</div>
+                <p className="text-sm text-gray-800 leading-relaxed">{selectedTask.description}</p>
               </div>
-            )}
+
+              {selectedTask.pr_url && (
+                <div>
+                  <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Pull Request</div>
+                  <a href={selectedTask.pr_url} target="_blank" rel="noreferrer"
+                    className="text-sm text-blue-600 underline underline-offset-2 break-all">
+                    {selectedTask.pr_url}
+                  </a>
+                </div>
+              )}
+
+              {selectedTask.summary && (
+                <div>
+                  <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Summary</div>
+                  <pre className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg p-3 font-sans border border-gray-100">{selectedTask.summary}</pre>
+                </div>
+              )}
+
+              {selectedTask.plan && (
+                <div>
+                  <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Plan</div>
+                  <pre className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg p-3 font-sans border border-gray-100">{selectedTask.plan}</pre>
+                </div>
+              )}
+
+              <div className="text-[9px] text-gray-400">
+                {new Date(selectedTask.created_at).toLocaleString('en-US', {
+                  weekday: 'short', month: 'short', day: 'numeric',
+                  hour: '2-digit', minute: '2-digit', second: '2-digit',
+                })}
+              </div>
+            </div>
           </div>
         </div>
-      </main>
+      )}
+
     </div>
   )
 }
