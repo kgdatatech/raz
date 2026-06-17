@@ -391,6 +391,7 @@ export default function RazDashboard() {
     setRole(retryRole)
     setWorkflow(retryWorkflow)
     setTask(t.description)
+    if (!running) runTask({ description: t.description, role: retryRole, workflow: retryWorkflow })
   }
 
   const canRun   = !running && !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())
