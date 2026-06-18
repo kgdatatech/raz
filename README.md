@@ -1,36 +1,229 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RAZ — Agentic Coding Framework
 
-## Getting Started
+RAZ is Archon Systems' internal AI coding agent framework. It connects Claude to your GitHub repositories, runs as a local Next.js app, and gives the team a UI to dispatch autonomous coding tasks — feature builds, bug fixes, security audits, QA, migrations, and ops assessments — each producing a real git branch and pull request.
 
-First, run the development server:
+## How it works
+
+1. Select a GitHub repository from the dropdown (synced from your token).
+2. Set the local path where that repo is cloned on the machine running RAZ.
+3. Choose an agent role and workflow type.
+4. Describe the task in plain language and hit **Run**.
+
+RAZ creates a git worktree, runs the agent loop (plan → explore → implement → verify → complete), commits the result, and opens a pull request — all visible in real time through the agent log.
+
+Tasks and per-repo memory persist in a local SQLite database (`.raziel/raziel.db`). If a task is interrupted, resume picks up from the last saved checkpoint without re-spending API cost.
+
+---
+
+## Agent Roles
+
+| Role | Badge | Purpose |
+|------|-------|---------|
+| RAZ-Dev  | `DEV`  | Full-stack feature development, bug fixes, refactors |
+| RAZ-Sec  | `SEC`  | Read-only security audit — OWASP Top 10, secrets, CVEs |
+| RAZ-QA   | `QA`   | Test writing, coverage analysis |
+| RAZ-Ops  | `OPS`  | Build health, environment config, CI/CD assessment |
+| RAZ-Data | `DATA` | Database migrations, schema validation |
+
+Each role has a defined tool allowlist, mandatory gates (e.g. RAZ-Dev must run `run_build` and `security_scan` before completing), and a role-specific system prompt. All roles read `AGENTS.md` as their mandatory first step before touching any code.
+
+---
+
+## Agent-to-Agent Communication
+
+Roles can collaborate autonomously in two ways:
+
+### Delegation
+A role can delegate a sub-task to another role inline using `delegate_to_role`. The sub-agent:
+- Runs inside the parent's worktree (sees in-progress changes)
+- Streams its log with a `[SubRole]` prefix, visually indented
+- Does **not** commit — the parent owns the final commit
+- Is capped at 20 iterations
+
+Example: RAZ-Dev delegates a security review to RAZ-Sec mid-feature, gets a report back, then continues implementation.
+
+### Handoffs
+When a task completes, the agent can propose handing off follow-up work to a peer role using `handoff_to_role`. The handoff:
+- Surfaces as an amber **suggestion card** in the UI — it does **not** auto-run
+- Shows the suggested role, workflow, and description of the next task
+- You click **Accept** to queue and run it, or **Dismiss** to drop it
+
+All inter-agent communication is logged to the database and visible in the **Comms** tab.
+
+---
+
+## Prerequisites
+
+- **Node.js 18+**
+- **Git** available in `PATH`
+- An **Anthropic API key** (Claude Sonnet 4.x or later)
+- A **GitHub Personal Access Token** with `repo`, `read:org`, and `workflow` scopes
+- The target repositories cloned locally on the machine running RAZ
+
+> **Windows + WSL:** RAZ detects WSL paths (`\\wsl.localhost\...`) automatically and routes commands through the correct distro.
+
+---
+
+## Setup
+
+```bash
+git clone <this-repo>
+cd raz-agent
+npm install
+cp .env.example .env.local
+```
+
+Edit `.env.local` and fill in both values:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+GITHUB_TOKEN=ghp_...
+```
+
+Start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000` in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## First run
 
-## Learn More
+1. The repository list loads from GitHub automatically on startup.
+2. Select a repo. If it has no local path saved, a path input appears — enter the absolute path to the local clone and click **Save**.
+3. Choose a role (DEV by default) and workflow.
+4. Type a task description and click **Run [role]**.
 
-To learn more about Next.js, take a look at the following resources:
+The agent log streams in real time. When the task completes, a pull request link appears in the log header.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Task queue
 
-## Deploy on Vercel
+Click **+Q** instead of **Run** to queue a task. Queued tasks run automatically in sequence after the current task finishes. Handoff-accepted tasks also enter the queue if an agent is currently running.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Bottom panel tabs
+
+| Tab | What it shows |
+|-----|--------------|
+| **History** | All tasks — status, role, workflow, files changed count, child task indicator. Click any row to open the task detail modal. |
+| **Memory** | Per-repo memory entries saved by the agent. Editable and deletable inline. |
+| **Comms** | All inter-agent messages — delegations and handoffs — with from/to role, type badge, and result summary. |
+| **Issues** | GitHub issues synced to the local DB. Filter open/closed, sync from GitHub, or click "→ Use as task" to populate the task input. |
+
+---
+
+## Task detail modal
+
+Clicking a history row opens the detail modal showing:
+
+- Status, role, workflow, linked issue number
+- Pull request link with live CI status, review decision, and merged state
+- Agent summary in markdown
+- Files changed (full list)
+- Error text for failed tasks
+- Agent plan
+- Parent task reference for delegated sub-tasks
+
+Failed tasks show a **↺ Retry** button to resume from the last checkpoint.
+
+---
+
+## Memory
+
+RAZ saves per-repo memory entries as it works — conventions it discovers, architecture decisions, known gotchas. These are injected into every future task on that repo as context, reducing repeat exploration and improving consistency.
+
+Memory is visible and editable in the **Memory** tab. You can delete or correct individual entries at any time.
+
+---
+
+## Checkpoint / resume
+
+Every agent iteration is checkpointed to the database. If a task fails or is interrupted, click **↺ Retry** in the task history to resume from the last saved state. The agent picks up where it left off without repeating completed steps.
+
+---
+
+## Security constraints
+
+The agent runs inside a git worktree isolated from the main branch. It cannot:
+
+- Read, write, or log `.env` files or any secret files
+- Run destructive commands (`rm -rf`, `git reset --hard`, `DROP TABLE`, `DELETE` without `WHERE`)
+- Make outbound HTTP requests from tools
+- Escape the worktree path
+
+`security_scan` runs on every changed file before a task can complete. If secrets are detected, the agent is blocked from calling `task_complete`.
+
+---
+
+## Project structure
+
+```
+app/
+  api/
+    agent/      — SSE stream endpoint; runs the agent loop
+    repos/      — GitHub repo sync + local path management
+    issues/     — GitHub issue sync and retrieval
+    tasks/      — Task CRUD
+    memory/     — Per-repo memory CRUD
+    messages/   — Agent message log (delegations + handoffs)
+    pr-status/  — Latest PR CI/review state for a task
+  page.tsx      — Main dashboard UI
+  layout.tsx    — Root layout with fonts
+lib/
+  agent.ts      — Core agent loop, worktree management, sub-agent closures, system prompt
+  tools.ts      — Tool definitions and execution (filesystem, bash, git, GitHub, delegation)
+  roles.ts      — Role definitions, tool allowlists, system contexts
+  db.ts         — SQLite schema and all DB operations (better-sqlite3)
+scripts/
+  fix-stuck.js  — Manually reset a stuck running task in the DB
+  read-last.js  — Print the last N log lines for a task
+.raziel/
+  raziel.db     — Local SQLite database (git-ignored)
+  reports/      — Markdown reports generated by RAZ-Sec and RAZ-Ops
+```
+
+---
+
+## Customizing roles
+
+Edit `lib/roles.ts` to change role names, badge colors, tool allowlists, or system prompt context. The `systemContext` field is injected verbatim into the agent's system prompt for that role.
+
+To add a new role, extend the `ROLE_IDS` array and add a matching entry to the `ROLES` record.
+
+---
+
+## AGENTS.md convention
+
+RAZ reads `AGENTS.md` (and `CLAUDE.md` → `@AGENTS.md`) from each target repository before starting work. Use this file to document project-specific conventions, framework versions, and rules the agent must follow. All roles are instructed to read this file as their mandatory first step.
+
+Example `AGENTS.md` for a target repo:
+
+```md
+# Project conventions
+
+- Uses Next.js 15 App Router — not Pages Router
+- Database: Supabase (Postgres). Migrations live in supabase/migrations/
+- Do not use `any` in TypeScript
+- All API routes must validate input with zod
+```
+
+---
+
+## Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | Claude API key |
+| `GITHUB_TOKEN` | Yes | GitHub PAT for repo/issue access and PR creation |
+
+---
+
+## License
+
+MIT
