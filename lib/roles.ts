@@ -31,6 +31,7 @@ export const ROLES: Record<RoleId, RoleDefinition> = {
       ...READ_TOOLS, 'write_file', 'execute_bash', 'run_build', 'run_tests',
       'run_lint', 'security_scan', 'dependency_audit', 'generate_report',
       'check_coverage', 'validate_migration',
+      'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    true,
     securityRequired: true,
@@ -54,6 +55,7 @@ You always verify your work: plan → explore → implement → build → test �
     badge:            'SEC',
     allowedTools: [
       ...READ_TOOLS, 'security_scan', 'dependency_audit', 'generate_report',
+      'handoff_to_role',
     ],
     buildRequired:    false,
     securityRequired: true,
@@ -84,6 +86,7 @@ Mark any finding that depends on framework convention as NEEDS VERIFICATION if y
     allowedTools: [
       ...READ_TOOLS, 'write_file', 'execute_bash', 'run_build', 'run_tests',
       'run_lint', 'check_coverage',
+      'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    true,
     securityRequired: false,
@@ -108,6 +111,7 @@ Always call run_tests and check_coverage. Report pass rates, coverage percentage
     badge:            'OPS',
     allowedTools: [
       ...READ_TOOLS, 'execute_bash', 'run_build', 'generate_report',
+      'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    false,
     securityRequired: false,
@@ -133,6 +137,7 @@ Always call generate_report with structured findings before completing.`,
     allowedTools: [
       ...READ_TOOLS, 'write_file', 'execute_bash', 'run_lint',
       'security_scan', 'validate_migration', 'generate_report',
+      'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    false,
     securityRequired: true,

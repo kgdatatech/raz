@@ -47,10 +47,13 @@ async function execInPath(
 }
 
 export interface ToolContext {
-  worktreePath: string
-  repoId?:      number
-  taskId?:      string
-  github?:      { owner: string; repo: string }
+  worktreePath:  string
+  repoId?:       number
+  taskId?:       string
+  parentRole?:   string
+  github?:       { owner: string; repo: string }
+  runSubAgent?:  (params: { role: string; description: string; workflow?: string }) => Promise<string>
+  queueHandoff?: (params: { role: string; description: string; workflow?: string; context?: string }) => Promise<string>
 }
 
 // Raw bash allowlist — these are the only commands the agent can run via execute_bash
@@ -348,6 +351,36 @@ export const TOOLS = [
     },
   },
 
+  // ── Agent Communication ──────────────────────────────────────────────────────
+  {
+    name: 'delegate_to_role',
+    description: 'Run another RAZ role as a sub-agent inline. The sub-agent works in the same codebase, completes its task, and returns a summary. Use to get a specialist review (e.g. delegate to RAZ-Sec to audit your changes, or RAZ-QA to write tests).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        role:     { type: 'string', enum: ['RAZ-Dev', 'RAZ-Sec', 'RAZ-QA', 'RAZ-Ops', 'RAZ-Data'], description: 'Which agent role to run' },
+        task:     { type: 'string', description: 'What you need this role to do — be specific' },
+        workflow: { type: 'string', enum: ['feature', 'fix', 'refactor', 'audit', 'test', 'strategy'], description: 'Workflow type for the sub-agent' },
+        context:  { type: 'string', description: 'Relevant context to pass — files changed, specific concerns, what you already tried' },
+      },
+      required: ['role', 'task'],
+    },
+  },
+  {
+    name: 'handoff_to_role',
+    description: 'Queue a follow-up task for another RAZ role to run after you complete. Unlike delegate_to_role, you do NOT wait for the result — it queues immediately and the user sees it in the UI. Use when your task is done and the next step belongs to a different specialist.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        role:     { type: 'string', enum: ['RAZ-Dev', 'RAZ-Sec', 'RAZ-QA', 'RAZ-Ops', 'RAZ-Data'], description: 'Which agent role should handle the follow-up' },
+        task:     { type: 'string', description: 'What the next role should do' },
+        workflow: { type: 'string', enum: ['feature', 'fix', 'refactor', 'audit', 'test', 'strategy'], description: 'Workflow type' },
+        context:  { type: 'string', description: 'Context to pass to the next agent' },
+      },
+      required: ['role', 'task'],
+    },
+  },
+
   // ── Completion ───────────────────────────────────────────────────────────────
   {
     name: 'task_complete',
@@ -370,6 +403,7 @@ export type ToolName =
   | 'create_plan' | 'save_memory' | 'security_scan'
   | 'fetch_issue' | 'list_issues'
   | 'dependency_audit' | 'generate_report' | 'check_coverage' | 'validate_migration'
+  | 'delegate_to_role' | 'handoff_to_role'
   | 'task_complete'
 
 export async function executeTool(
@@ -658,6 +692,10 @@ export async function executeTool(
       const filename = `${date}-${slug}.md`
       const content  = `# ${title}\n\n**Generated:** ${new Date().toISOString()}\n\n## Summary\n\n${summary}\n\n## Findings\n\n${findings}`
       fs.writeFileSync(path.join(dir, filename), content, 'utf-8')
+      // Also persist to repo memory so it appears in the Memory tab
+      if (ctx.repoId) {
+        setMemory(ctx.repoId, `report:${slug}`, `${summary}\n\nFull report: .raziel/reports/${filename}`)
+      }
       return `OK: Report saved to .raziel/reports/${filename}\n\nPreview:\n${content.slice(0, 400)}${content.length > 400 ? '\n...[truncated]' : ''}`
     }
 
@@ -707,6 +745,39 @@ export async function executeTool(
       }
 
       return `MIGRATION WARNINGS — ${warnings.length} issue(s) in ${rel}:\n${warnings.join('\n')}\n\nReview carefully. If intentional, document the reason in your plan.`
+    }
+
+    // ── delegate_to_role ──────────────────────────────────────────────────────
+    case 'delegate_to_role': {
+      if (!ctx.runSubAgent) return 'ERROR: Delegation not available in this context.'
+      const subRole = input.role as string
+      const subTask = input.task as string
+      const subWf   = input.workflow as string | undefined
+      const subCtx  = input.context as string | undefined
+      const fullDesc = subCtx
+        ? `${subTask}\n\nContext from ${ctx.parentRole ?? 'parent agent'}:\n${subCtx}`
+        : subTask
+      try {
+        const result = await ctx.runSubAgent({ role: subRole, description: fullDesc, workflow: subWf })
+        return `[${subRole}] DELEGATION COMPLETE:\n${result}`
+      } catch (e) {
+        return `[${subRole}] DELEGATION FAILED: ${e}`
+      }
+    }
+
+    // ── handoff_to_role ───────────────────────────────────────────────────────
+    case 'handoff_to_role': {
+      if (!ctx.queueHandoff) return 'ERROR: Handoff not available in this context.'
+      const toRole  = input.role as string
+      const toTask  = input.task as string
+      const toWf    = input.workflow as string | undefined
+      const toCtx   = input.context as string | undefined
+      try {
+        const newTaskId = await ctx.queueHandoff({ role: toRole, description: toTask, workflow: toWf, context: toCtx })
+        return `HANDOFF QUEUED: ${toRole} will handle "${toTask.slice(0, 60)}${toTask.length > 60 ? '...' : ''}" (Task ID: ${newTaskId})`
+      } catch (e) {
+        return `HANDOFF FAILED: ${e}`
+      }
     }
 
     // ── task_complete ─────────────────────────────────────────────────────────

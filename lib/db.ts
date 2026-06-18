@@ -102,6 +102,26 @@ if (VERSION < 4) {
   db.exec('PRAGMA user_version = 4')
 }
 
+if (VERSION < 5) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`) } catch {}
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_messages (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      repo_id      INTEGER REFERENCES repos(id),
+      from_role    TEXT NOT NULL,
+      to_role      TEXT NOT NULL,
+      from_task_id TEXT,
+      to_task_id   TEXT,
+      message_type TEXT NOT NULL DEFAULT 'delegation',
+      message      TEXT NOT NULL,
+      context      TEXT,
+      result       TEXT,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `)
+  db.exec('PRAGMA user_version = 5')
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RepoRow {
@@ -113,21 +133,22 @@ export interface RepoRow {
 }
 
 export interface TaskRow {
-  id:            string
-  repo_id:       number
-  description:   string
-  branch:        string
-  status:        string
-  workflow:      string
-  role:          string
-  issue_number:  number | null
-  plan:          string | null
-  pr_url:        string | null
-  summary:       string | null
-  error:         string | null
-  files_changed: string | null
-  created_at:    string
-  completed_at:  string | null
+  id:             string
+  repo_id:        number
+  description:    string
+  branch:         string
+  status:         string
+  workflow:       string
+  role:           string
+  issue_number:   number | null
+  plan:           string | null
+  pr_url:         string | null
+  summary:        string | null
+  error:          string | null
+  files_changed:  string | null
+  parent_task_id: string | null
+  created_at:     string
+  completed_at:   string | null
 }
 
 export interface IssueRow {
@@ -185,6 +206,22 @@ export function createTask(
   return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow
 }
 
+export function createQueuedTask(
+  id: string,
+  repoId: number,
+  description: string,
+  branch: string,
+  workflow = 'feature',
+  role = 'RAZ-Dev',
+  parentTaskId?: string,
+): TaskRow {
+  db.prepare(`
+    INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id)
+    VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
+  `).run(id, repoId, description, branch, workflow, role, parentTaskId ?? null)
+  return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow
+}
+
 export function savePlan(taskId: string, plan: string) {
   db.prepare(`UPDATE tasks SET plan = ? WHERE id = ?`).run(plan, taskId)
 }
@@ -205,6 +242,10 @@ export function failTask(id: string, error: string) {
   db.prepare(`
     UPDATE tasks SET status = 'failed', error = ?, completed_at = datetime('now') WHERE id = ?
   `).run(error, id)
+}
+
+export function deleteTask(id: string) {
+  db.prepare(`DELETE FROM tasks WHERE id = ?`).run(id)
 }
 
 export function listTasks(repoId?: number): TaskRow[] {
@@ -310,6 +351,61 @@ export function savePrStatus(taskId: string, data: {
 
 export function getLatestPrStatus(taskId: string) {
   return db.prepare(`SELECT * FROM pr_status WHERE task_id = ? ORDER BY checked_at DESC LIMIT 1`).get(taskId)
+}
+
+export function setTaskParent(taskId: string, parentTaskId: string) {
+  db.prepare(`UPDATE tasks SET parent_task_id = ? WHERE id = ?`).run(parentTaskId, taskId)
+}
+
+export function listChildTasks(parentTaskId: string): TaskRow[] {
+  return db.prepare(`SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at ASC`).all(parentTaskId) as TaskRow[]
+}
+
+// ─── Agent Messages ───────────────────────────────────────────────────────────
+
+export interface AgentMessageRow {
+  id:           number
+  repo_id:      number
+  from_role:    string
+  to_role:      string
+  from_task_id: string | null
+  to_task_id:   string | null
+  message_type: string
+  message:      string
+  context:      string | null
+  result:       string | null
+  created_at:   string
+}
+
+export function createAgentMessage(params: {
+  repoId:      number
+  fromRole:    string
+  toRole:      string
+  fromTaskId:  string
+  toTaskId?:   string
+  messageType: string
+  message:     string
+  context?:    string
+}): number {
+  const info = db.prepare(`
+    INSERT INTO agent_messages (repo_id, from_role, to_role, from_task_id, to_task_id, message_type, message, context)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    params.repoId, params.fromRole, params.toRole,
+    params.fromTaskId, params.toTaskId ?? null,
+    params.messageType, params.message, params.context ?? null,
+  )
+  return info.lastInsertRowid as number
+}
+
+export function updateAgentMessageResult(id: number, result: string) {
+  db.prepare(`UPDATE agent_messages SET result = ? WHERE id = ?`).run(result, id)
+}
+
+export function listAgentMessages(repoId: number): AgentMessageRow[] {
+  return db.prepare(
+    `SELECT * FROM agent_messages WHERE repo_id = ? ORDER BY created_at DESC LIMIT 100`
+  ).all(repoId) as AgentMessageRow[]
 }
 
 // On startup, any task still 'running' was interrupted by a server restart

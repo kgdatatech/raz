@@ -2,27 +2,35 @@ import Anthropic from '@anthropic-ai/sdk'
 import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
+import { randomUUID } from 'crypto'
 import { TOOLS, executeTool, ToolName, ToolContext } from './tools'
-import { getMemory, listTasks, getIssue, saveTaskMessages } from './db'
+import {
+  getMemory, listTasks, getIssue, saveTaskMessages,
+  createQueuedTask, setTaskParent, createAgentMessage, updateAgentMessageResult,
+} from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export interface AgentTask {
-  taskId:             string
-  repoPath:           string
-  description:        string
-  branch:             string
-  workflow:           string
-  role?:              RoleId
-  repoId?:            number
-  issueNumber?:       number
-  github?:            { owner: string; repo: string }
+  taskId:              string
+  repoPath:            string
+  description:         string
+  branch:              string
+  workflow:            string
+  role?:               RoleId
+  repoId?:             number
+  issueNumber?:        number
+  github?:             { owner: string; repo: string }
   checkpointMessages?: unknown[]
+  parentTaskId?:       string
+  parentRole?:         string
+  maxIterations?:      number
+  existingWorktree?:   string  // when set, skip worktree creation (used by sub-agents)
 }
 
 export interface AgentEvent {
-  type:    'thinking' | 'tool_call' | 'tool_result' | 'plan' | 'usage' | 'complete' | 'error'
+  type:    'thinking' | 'tool_call' | 'tool_result' | 'plan' | 'usage' | 'complete' | 'error' | 'delegation' | 'handoff'
   message: string
   data?:   Record<string, unknown>
 }
@@ -65,7 +73,6 @@ function setupWorktree(repoPath: string, branch: string): string {
         { stdio: 'pipe' },
       )
     } catch {
-      // Branch already exists (resume) — check it out without -b
       try {
         execSync(
           `wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree add ${JSON.stringify(linuxWt)} ${JSON.stringify(branch)}`,
@@ -86,7 +93,6 @@ function setupWorktree(repoPath: string, branch: string): string {
     try {
       execSync(`git worktree add -b "${branch}" "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
     } catch {
-      // Branch already exists (resume) — check it out without -b
       execSync(`git worktree add "${worktreePath}" "${branch}"`, { cwd: repoPath, stdio: 'pipe' })
     }
     return worktreePath
@@ -139,7 +145,7 @@ async function callWithBackoff(
     try {
       return await fn()
     } catch (e: unknown) {
-      const err      = e as { status?: number }
+      const err       = e as { status?: number }
       const retryable = err.status === 429 || err.status === 529 || (err.status ?? 0) >= 500
       if (!retryable || i === maxRetries - 1) throw e
       const delay = Math.min(2_000 * Math.pow(2, i), 60_000)
@@ -173,8 +179,9 @@ function buildSystemPrompt(params: {
   roleContext:   string
   issueContent?: string
   isResume:      boolean
+  parentRole?:   string
 }): string {
-  const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume } = params
+  const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume, parentRole } = params
 
   const memoryBlock = Object.keys(memory).length > 0
     ? `\n\nREPO MEMORY (what you know about this codebase):\n${Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
@@ -190,6 +197,10 @@ function buildSystemPrompt(params: {
 
   const resumeBlock = isResume
     ? `\n\n⚠ RESUMED TASK: This task was interrupted and is continuing from a saved checkpoint. Review the conversation history above to understand what was already done, then continue from where you left off. Do NOT repeat work already completed.`
+    : ''
+
+  const delegationBlock = parentRole
+    ? `\n\n⚡ DELEGATED TASK: You were called by ${parentRole}. Complete your task and call task_complete with a clear summary — your findings will be returned to the parent agent as a tool result.`
     : ''
 
   const workflowGuide: Record<string, string> = {
@@ -237,7 +248,6 @@ MANDATORY PHASE ORDER — DO NOT SKIP
                → Save useful findings with save_memory.
 3. IMPLEMENT   → Make targeted, minimal changes. Edit existing files, don't create new ones unless required.
                → Follow TypeScript strictly: no "any", explicit return types on all exports.
-               → Follow Tailwind and component conventions found in the codebase.
                → No placeholder comments ("// TODO", "// implement this").
                → No dead code.
 4. VERIFY      → Call run_build. Fix every TypeScript error and build failure before proceeding.
@@ -245,6 +255,17 @@ MANDATORY PHASE ORDER — DO NOT SKIP
 6. LINT        → Call run_lint and fix any errors.
 7. SECURITY    → Call security_scan. If any findings, fix before proceeding. Never call task_complete with secrets detected.
 8. COMPLETE    → Call task_complete with a clear summary and full list of files changed.
+
+══════════════════════════════════════
+AGENT COLLABORATION
+══════════════════════════════════════
+You can collaborate with other RAZ roles:
+
+• delegate_to_role  — Run another role as a sub-agent RIGHT NOW. You wait for the result. Use when you need a specialist to review or extend your work before you complete (e.g. "have RAZ-Sec audit my auth changes", "have RAZ-QA write tests for this feature").
+• handoff_to_role   — Queue a follow-up task for another role AFTER you complete. You don't wait. Use when your work is done and the next step belongs to a specialist (e.g. "hand off to RAZ-Sec for final audit", "hand off to RAZ-Ops to check deployment readiness").
+
+When delegating, pass meaningful context so the sub-agent has what it needs.
+When handing off, include a clear description of what was done so the next agent can orient quickly.
 
 ══════════════════════════════════════
 SECURITY RULES — ABSOLUTE, NON-NEGOTIABLE
@@ -264,9 +285,8 @@ CODE QUALITY RULES
 • Prefer editing existing files over creating new ones
 • Match the existing code style exactly (naming, spacing, import order, file structure)
 • TypeScript: strict types, no "any", explicit return types on exported functions
-• No console.log in production code (use the project's logger if one exists)
+• No console.log in production code
 • No commented-out code
-• No multi-line docstrings or obvious comments — code should be self-documenting
 • Conventional commits: feat:, fix:, refactor:, chore:, test:, docs:
 
 ══════════════════════════════════════
@@ -275,21 +295,30 @@ WHEN STUCK OR UNCERTAIN
 • If a task is ambiguous, make the best reasonable interpretation — document it in your plan and proceed
 • If you hit an error after 3 attempts to fix it, stop and call task_complete with a "blocked" explanation
 • Never loop endlessly — if you are going in circles, explain why and stop
-• If implementing the task would require breaking security rules, stop and explain in task_complete
 
-${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}${resumeBlock}`
+${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}${resumeBlock}${delegationBlock}`
 }
 
 // ── Main agent loop ───────────────────────────────────────────────────────────
 export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?: AbortSignal): Promise<void> {
-  const { taskId, repoPath, description, branch, workflow, role, repoId, issueNumber, github, checkpointMessages } = task
+  const {
+    taskId, repoPath, description, branch, workflow,
+    role, repoId, issueNumber, github, checkpointMessages,
+    parentTaskId, parentRole, maxIterations = 40, existingWorktree,
+  } = task
+
   const roleDefinition = ROLES[role ?? DEFAULT_ROLE]
   const isResume       = !!(checkpointMessages?.length)
-  let worktreePath: string | null = null
+  const isSubAgent     = !!existingWorktree
+  let worktreePath: string | null = existingWorktree ?? null
 
   try {
-    onEvent({ type: 'thinking', message: isResume ? `Resuming from checkpoint (${checkpointMessages!.length} messages saved)…` : `Initializing worktree on branch: ${branch}` })
-    worktreePath = setupWorktree(repoPath, branch)
+    if (existingWorktree) {
+      onEvent({ type: 'thinking', message: `[sub-agent] Starting in parent worktree: ${path.basename(existingWorktree)}` })
+    } else {
+      onEvent({ type: 'thinking', message: isResume ? `Resuming from checkpoint (${checkpointMessages!.length} messages saved)…` : `Initializing worktree on branch: ${branch}` })
+      worktreePath = setupWorktree(repoPath, branch)
+    }
 
     const context    = readContextFiles(repoPath)
     const memory     = repoId ? getMemory(repoId) : {}
@@ -302,36 +331,149 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     }
 
     const systemPrompt = buildSystemPrompt({
-      context, memory, pastTasks, workflow, isResume,
-      roleContext:  roleDefinition.systemContext,
+      context, memory, pastTasks, workflow, isResume, parentRole,
+      roleContext: roleDefinition.systemContext,
       issueContent,
     })
 
     const roleTools = TOOLS.filter((t) => roleDefinition.allowedTools.includes(t.name))
 
-    // Load checkpoint or start fresh
     const messages: Anthropic.MessageParam[] = isResume
       ? (checkpointMessages as Anthropic.MessageParam[])
       : [{ role: 'user', content: `Task: ${description}${issueNumber ? `\n\nLinked issue: #${issueNumber}` : ''}` }]
 
-    const toolCtx: ToolContext = { worktreePath, repoId, taskId, github }
+    // ── Agent collaboration callbacks ─────────────────────────────────────────
+    const runSubAgent: ToolContext['runSubAgent'] = async (params) => {
+      const subRole    = params.role as RoleId
+      const subTaskId  = randomUUID()
+      const subWf      = params.workflow ?? (
+        subRole === 'RAZ-Sec' ? 'audit' :
+        subRole === 'RAZ-QA'  ? 'test'  :
+        subRole === 'RAZ-Ops' ? 'strategy' : 'feature'
+      )
+
+      // Create DB record for the sub-task
+      if (repoId) {
+        const { createTask } = await import('./db')
+        createTask(subTaskId, repoId, params.description, branch, subWf, undefined, subRole)
+        if (taskId) setTaskParent(subTaskId, taskId)
+      }
+
+      // Log the delegation
+      let msgId: number | undefined
+      if (repoId) {
+        msgId = createAgentMessage({
+          repoId, fromRole: role ?? DEFAULT_ROLE, toRole: subRole,
+          fromTaskId: taskId, toTaskId: subTaskId,
+          messageType: 'delegation', message: params.description,
+        })
+      }
+
+      onEvent({
+        type: 'delegation',
+        message: `→ ${subRole}: ${params.description.slice(0, 100)}`,
+        data: { subRole, subTaskId, parentRole: role, isDelegation: true },
+      })
+
+      let subSummary = 'Sub-agent completed without summary.'
+      let subFailed  = false
+
+      await runAgent(
+        {
+          taskId:           subTaskId,
+          repoPath,
+          description:      params.description,
+          branch,
+          workflow:         subWf,
+          role:             subRole,
+          repoId,
+          github,
+          existingWorktree: worktreePath ?? undefined,
+          parentTaskId:     taskId,
+          parentRole:       role,
+          maxIterations:    20,
+        },
+        (event) => {
+          onEvent({
+            ...event,
+            message: `[${subRole}] ${event.message}`,
+            data: { ...event.data, delegated: true, delegateRole: subRole },
+          })
+          if (event.type === 'complete') subSummary = event.message
+          if (event.type === 'error')    { subFailed = true; subSummary = event.message }
+        },
+        signal,
+      )
+
+      if (repoId && msgId !== undefined) {
+        updateAgentMessageResult(msgId, subFailed ? `FAILED: ${subSummary}` : subSummary)
+      }
+
+      onEvent({
+        type: 'delegation',
+        message: `← ${subRole} ${subFailed ? 'failed' : 'complete'}: ${subSummary.slice(0, 100)}`,
+        data: { subRole, subTaskId, complete: true, failed: subFailed, delegated: false },
+      })
+
+      return subFailed ? `FAILED: ${subSummary}` : subSummary
+    }
+
+    const queueHandoff: ToolContext['queueHandoff'] = async (params) => {
+      const toRole   = params.role as RoleId
+      const newId    = randomUUID()
+      const toWf     = params.workflow ?? (
+        toRole === 'RAZ-Sec' ? 'audit' :
+        toRole === 'RAZ-QA'  ? 'test'  :
+        toRole === 'RAZ-Ops' ? 'strategy' : 'feature'
+      )
+      const branchSlug = params.description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 25).replace(/-$/, '')
+      const newBranch  = `${toRole.toLowerCase().replace('-', '')}/handoff-${branchSlug}-${newId.slice(0, 6)}`
+      const fullDesc   = params.context
+        ? `${params.description}\n\nContext from ${role ?? 'parent agent'}:\n${params.context}`
+        : params.description
+
+      if (repoId) {
+        createQueuedTask(newId, repoId, fullDesc, newBranch, toWf, toRole, taskId)
+        createAgentMessage({
+          repoId, fromRole: role ?? DEFAULT_ROLE, toRole,
+          fromTaskId: taskId, toTaskId: newId,
+          messageType: 'handoff', message: params.description,
+          context: params.context,
+        })
+      }
+
+      onEvent({
+        type: 'handoff',
+        message: `⟶ ${toRole}: ${params.description.slice(0, 80)}`,
+        data: { taskId: newId, role: toRole, description: fullDesc, workflow: toWf, branch: newBranch },
+      })
+
+      return newId
+    }
+
+    const toolCtx: ToolContext = {
+      worktreePath: worktreePath!,
+      repoId,
+      taskId,
+      parentRole: role,
+      github,
+      runSubAgent,
+      queueHandoff,
+    }
 
     let iterations      = 0
-    const MAX           = 40
     let planCreated     = false
     let buildVerified   = false
     let securityClean   = false
     const extraGatesMet = new Map<string, boolean>(roleDefinition.extraGates.map((g) => [g, false]))
     let totalInputTokens  = 0
     let totalOutputTokens = 0
-
-    // Stuck-loop detection: track recent (tool, input-sig) pairs
     const recentCalls: string[] = []
 
     const INPUT_COST_PER_M  = 3.00
     const OUTPUT_COST_PER_M = 15.00
 
-    while (iterations < MAX) {
+    while (iterations < maxIterations) {
       iterations++
 
       if (signal?.aborted) { onEvent({ type: 'error', message: 'Task cancelled.' }); return }
@@ -364,25 +506,23 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         onEvent({ type: 'thinking', message: textBlocks.map((b) => b.text).join('\n') })
       }
 
-      // ── Stuck-loop detection ──────────────────────────────────────────────
+      // Stuck-loop detection
       for (const t of toolUses) {
         const sig = `${t.name}:${JSON.stringify(t.input).slice(0, 150)}`
         recentCalls.push(sig)
       }
       if (recentCalls.length > 12) recentCalls.splice(0, recentCalls.length - 12)
-
       if (recentCalls.length >= 6) {
         const counts = new Map<string, number>()
         for (const s of recentCalls) counts.set(s, (counts.get(s) ?? 0) + 1)
         const stuck = [...counts.entries()].find(([, n]) => n >= 3)
         if (stuck) {
-          const toolName = stuck[0].split(':')[0]
-          onEvent({ type: 'error', message: `Stuck loop detected — "${toolName}" was called 3× with the same input. Stopping to save your API spend. Adjust the task description and retry; RAZ will resume from the checkpoint.` })
+          onEvent({ type: 'error', message: `Stuck loop detected — "${stuck[0].split(':')[0]}" called 3× with identical input. Stopping to protect API spend. Retry to resume from checkpoint.` })
           return
         }
       }
 
-      // ── Gate: plan before writes ──────────────────────────────────────────
+      // Gate: plan before writes
       const writingWithoutPlan = !planCreated && toolUses.some((t) =>
         ['write_file', 'execute_bash', 'run_build', 'run_tests', 'run_lint'].includes(t.name)
       )
@@ -393,7 +533,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         continue
       }
 
-      // ── Completion check ──────────────────────────────────────────────────
+      // Completion check
       const completeCall = toolUses.find((t) => t.name === 'task_complete')
       if (completeCall) {
         const inp = completeCall.input as { summary: string; files_changed: string[]; notes?: string }
@@ -404,14 +544,12 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
           saveTaskMessages(taskId, messages)
           continue
         }
-
         if (roleDefinition.securityRequired && !securityClean) {
           messages.push({ role: 'assistant', content: response.content })
           messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: completeCall.id, content: 'ERROR: You must call security_scan before task_complete.' }] })
           saveTaskMessages(taskId, messages)
           continue
         }
-
         const unmetGates = roleDefinition.extraGates.filter((g) => !extraGatesMet.get(g))
         if (unmetGates.length > 0) {
           messages.push({ role: 'assistant', content: response.content })
@@ -421,31 +559,33 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         }
 
         const costUsdFinal = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
-        try {
-          commitChanges(worktreePath, inp.summary, workflow, roleDefinition.commitPrefix)
-          onEvent({ type: 'complete', message: inp.summary, data: { files_changed: inp.files_changed, notes: inp.notes, branch, costUsd: costUsdFinal, inputTokens: totalInputTokens, outputTokens: totalOutputTokens } })
-        } catch {
-          onEvent({ type: 'complete', message: inp.summary, data: { files_changed: inp.files_changed, notes: inp.notes, branch, commit_skipped: true, costUsd: costUsdFinal, inputTokens: totalInputTokens, outputTokens: totalOutputTokens } })
+
+        // Sub-agents don't commit — parent owns the commit
+        if (!isSubAgent) {
+          try {
+            commitChanges(worktreePath!, inp.summary, workflow, roleDefinition.commitPrefix)
+          } catch {}
         }
+
+        onEvent({ type: 'complete', message: inp.summary, data: { files_changed: inp.files_changed, notes: inp.notes, branch, costUsd: costUsdFinal, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, isSubAgent } })
         return
       }
 
       if (response.stop_reason === 'end_turn' && toolUses.length === 0) {
-        onEvent({ type: 'complete', message: 'Agent finished without explicit completion.', data: { branch } })
+        onEvent({ type: 'complete', message: 'Agent finished without explicit completion.', data: { branch, isSubAgent } })
         return
       }
 
-      // ── Execute tools ─────────────────────────────────────────────────────
+      // Execute tools
       const toolResults: Anthropic.ToolResultBlockParam[] = []
-
       for (const toolUse of toolUses) {
         onEvent({ type: 'tool_call', message: toolUse.name, data: { input: toolUse.input } })
 
         const result = await executeTool(toolUse.name as ToolName, toolUse.input as Record<string, unknown>, toolCtx)
 
-        if (toolUse.name === 'create_plan')  { planCreated   = true; onEvent({ type: 'plan', message: (toolUse.input as Record<string, unknown>).plan as string }) }
-        if (toolUse.name === 'run_build')      buildVerified  = true
-        if (toolUse.name === 'security_scan')  securityClean  = !result.startsWith('SECURITY ALERT')
+        if (toolUse.name === 'create_plan')  { planCreated  = true; onEvent({ type: 'plan', message: (toolUse.input as Record<string, unknown>).plan as string }) }
+        if (toolUse.name === 'run_build')      buildVerified = true
+        if (toolUse.name === 'security_scan')  securityClean = !result.startsWith('SECURITY ALERT')
         if (extraGatesMet.has(toolUse.name))   extraGatesMet.set(toolUse.name, true)
 
         onEvent({ type: 'tool_result', message: result.slice(0, 300) })
@@ -455,14 +595,15 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       messages.push({ role: 'assistant', content: response.content })
       messages.push({ role: 'user', content: toolResults })
 
-      // ── Checkpoint: persist messages after every iteration ────────────────
+      // Checkpoint after every iteration
       saveTaskMessages(taskId, messages)
     }
 
-    onEvent({ type: 'error', message: 'Agent hit max iterations (40). Task incomplete. Retry to resume from the last checkpoint.' })
+    onEvent({ type: 'error', message: `Agent hit max iterations (${maxIterations}). Task incomplete. Retry to resume from the last checkpoint.` })
   } catch (err) {
     onEvent({ type: 'error', message: `Agent error: ${err}` })
   } finally {
-    if (worktreePath) cleanupWorktree(repoPath, worktreePath)
+    // Only clean up worktrees we created — not borrowed parent worktrees
+    if (worktreePath && !isSubAgent) cleanupWorktree(repoPath, worktreePath)
   }
 }
