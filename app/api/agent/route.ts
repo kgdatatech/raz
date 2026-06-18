@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { randomUUID } from 'crypto'
+import { execSync } from 'child_process'
 import { runAgent } from '@/lib/agent'
 import { pushBranchAndOpenPR } from '@/lib/github'
 import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning } from '@/lib/db'
@@ -82,6 +83,22 @@ export async function POST(req: NextRequest) {
         )
 
         if (completionData && !completionData.commit_skipped) {
+          // Check whether the agent actually committed anything before attempting a PR
+          let commitsAhead = 0
+          try {
+            const result = execSync(
+              `git rev-list origin/${baseBranch}..HEAD --count`,
+              { cwd: repoPath, encoding: 'utf8' }
+            ).trim()
+            commitsAhead = parseInt(result, 10) || 0
+          } catch { commitsAhead = 0 }
+
+          if (commitsAhead === 0) {
+            // Read-only task (audit/strategy) — no commits, no PR needed
+            const summary = String(completionData.summary ?? description)
+            completeTask(taskId, null, summary, [])
+            send({ type: 'complete', message: 'Assessment complete. No code changes — PR skipped.', data: { branch, taskId } })
+          } else {
           send({ type: 'thinking', message: 'Opening pull request...' })
           try {
             const summary = String(completionData.summary ?? description)
@@ -118,6 +135,7 @@ export async function POST(req: NextRequest) {
             failTask(taskId, `PR failed: ${e}`)
             send({ type: 'error', message: `Task complete but PR failed: ${e}` })
           }
+          } // end commitsAhead > 0
         } else if (completionData?.commit_skipped) {
           completeTask(taskId, null, String(completionData.summary ?? ''), [])
         } else {
