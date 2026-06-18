@@ -751,30 +751,6 @@ export default function RazDashboard() {
               {running && <button onClick={() => { abortRef.current?.abort(); setRunning(false) }} className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-md hover:bg-red-700 transition-colors">Stop</button>}
             </div>
 
-            {/* Handoff suggestions */}
-            {handoffSuggestions.length > 0 && (
-              <div className="flex flex-col gap-2">
-                {handoffSuggestions.map((s) => (
-                  <div key={s.taskId} className="border border-amber-200 rounded-md overflow-hidden bg-amber-50">
-                    <div className="px-3 py-1.5 flex items-center gap-1.5 border-b border-amber-200">
-                      <span className="text-[9px] font-bold text-amber-700">⟶ HANDOFF SUGGESTION</span>
-                      <span className="text-[8px] text-amber-500 ml-auto">{s.fromRole}</span>
-                    </div>
-                    <div className="px-3 py-2">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: ROLES[s.role]?.color ?? '#6b7280', color: '#fff' }}>{ROLES[s.role]?.badge ?? s.role}</span>
-                        <span className="text-[9px] text-amber-600">{s.workflow}</span>
-                      </div>
-                      <p className="text-[10px] text-gray-700 leading-snug mb-2 line-clamp-2">{s.description}</p>
-                      <div className="flex gap-1.5">
-                        <button onClick={() => acceptHandoff(s)} className="flex-1 py-1 bg-amber-600 text-white text-[10px] font-semibold rounded hover:bg-amber-700 transition-colors">Accept → Run {s.role}</button>
-                        <button onClick={() => dismissHandoff(s.taskId)} className="px-2 py-1 text-[10px] text-amber-600 border border-amber-300 rounded hover:bg-amber-100 transition-colors">Dismiss</button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
 
             {/* Queue list */}
             {queue.length > 0 && (
@@ -800,16 +776,6 @@ export default function RazDashboard() {
               </div>
             )}
 
-            {/* Plan (collapsible) */}
-            {activePlan && (
-              <div className="border border-indigo-200 rounded-md overflow-hidden">
-                <button onClick={() => setPlanOpen((v) => !v)} className="w-full flex items-center justify-between px-3 py-2 bg-indigo-50 text-[9px] font-semibold text-indigo-500 uppercase tracking-widest">
-                  <span>⊞ {role} Plan</span>
-                  <span>{planOpen ? '▲' : '▼'}</span>
-                </button>
-                {planOpen && <div className="px-3 py-2 bg-white max-h-48 overflow-y-auto"><Markdown text={activePlan} className="text-[10px]" /></div>}
-              </div>
-            )}
 
           </div>
         </div>
@@ -835,7 +801,7 @@ export default function RazDashboard() {
                 )}
               </div>
             </div>
-            <div ref={logRef} className="flex-1 overflow-y-auto p-3 space-y-px bg-gray-50 font-mono text-[10px]">
+            <div ref={logRef} className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-px bg-gray-50 font-mono text-[10px]">
               {log.length === 0 && !running && (
                 <div className="h-full flex items-center justify-center"><span className="text-xs text-gray-300">Select a repo, set a task, and run.</span></div>
               )}
@@ -843,20 +809,46 @@ export default function RazDashboard() {
                 const isDelegated = entry.data?.delegated === true
                 const isDelStart  = entry.type === 'delegation' && !entry.data?.complete
                 const isDelEnd    = entry.type === 'delegation' && entry.data?.complete
+                const handoffCard = entry.type === 'handoff' && entry.data?.taskId
+                  ? handoffSuggestions.find((h) => h.taskId === entry.data?.taskId)
+                  : null
                 return (
-                  <div key={i} className={`flex gap-2 leading-relaxed ${TYPE_STYLES[entry.type]} ${isDelegated ? 'pl-4 opacity-75' : ''} ${isDelStart ? 'mt-1 border-l-2 border-violet-300 pl-2' : ''} ${isDelEnd ? 'border-l-2 border-violet-300 pl-2 mb-1' : ''}`}>
-                    <span className="shrink-0 text-[8px] text-gray-300 w-14 text-right pt-px">
-                      {new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </span>
-                    <span className="shrink-0 w-3 text-center">{TYPE_PREFIX[entry.type]}</span>
-                    <span className="break-all">
-                      {entry.type === 'tool_call'
-                        ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? ` — ${JSON.stringify(entry.data.input).slice(0, 120)}` : ''}</>
-                        : entry.type === 'plan'
-                        ? <span className="text-indigo-500 font-medium">Plan created — see left panel</span>
-                        : entry.message}
-                    </span>
-                  </div>
+                  <React.Fragment key={i}>
+                    <div className={`flex gap-2 leading-relaxed ${TYPE_STYLES[entry.type]} ${isDelegated ? 'pl-4 opacity-75' : ''} ${isDelStart ? 'mt-1 border-l-2 border-violet-300 pl-2' : ''} ${isDelEnd ? 'border-l-2 border-violet-300 pl-2 mb-1' : ''}`}>
+                      <span className="shrink-0 text-[8px] text-gray-300 w-14 text-right pt-px">
+                        {new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                      <span className="shrink-0 w-3 text-center">{TYPE_PREFIX[entry.type]}</span>
+                      <span className="break-words min-w-0 flex-1">
+                        {entry.type === 'tool_call'
+                          ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? ` — ${JSON.stringify(entry.data.input).slice(0, 120)}` : ''}</>
+                          : entry.type === 'plan'
+                          ? <span className="text-indigo-500 font-medium cursor-pointer hover:underline" onClick={() => setPlanOpen(true)}>Plan created → view</span>
+                          : entry.message}
+                      </span>
+                    </div>
+                    {handoffCard && (
+                      <div className="ml-[68px] my-1.5 font-sans">
+                        <div className="border border-amber-200 rounded-md overflow-hidden bg-amber-50 max-w-sm">
+                          <div className="px-3 py-1.5 flex items-center gap-1.5 border-b border-amber-200">
+                            <span className="text-[9px] font-bold text-amber-700">⟶ HANDOFF SUGGESTION</span>
+                            <span className="text-[8px] text-amber-500 ml-auto">{handoffCard.fromRole}</span>
+                          </div>
+                          <div className="px-3 py-2">
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: ROLES[handoffCard.role]?.color ?? '#6b7280', color: '#fff' }}>{ROLES[handoffCard.role]?.badge ?? handoffCard.role}</span>
+                              <span className="text-[9px] text-amber-600">{handoffCard.workflow}</span>
+                            </div>
+                            <p className="text-[10px] text-gray-700 leading-snug mb-2 line-clamp-2">{handoffCard.description}</p>
+                            <div className="flex gap-1.5">
+                              <button onClick={() => acceptHandoff(handoffCard)} className="flex-1 py-1 bg-amber-600 text-white text-[10px] font-semibold rounded hover:bg-amber-700 transition-colors">Accept → Run {handoffCard.role}</button>
+                              <button onClick={() => dismissHandoff(handoffCard.taskId)} className="px-2 py-1 text-[10px] text-amber-600 border border-amber-300 rounded hover:bg-amber-100 transition-colors">Dismiss</button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </React.Fragment>
                 )
               })}
               {running && (
@@ -1055,6 +1047,26 @@ export default function RazDashboard() {
 
         </div>
       </div>
+
+      {/* ── Plan Sidebar ──────────────────────────────────────────────── */}
+      {activePlan && (
+        <>
+          <div className={`fixed right-0 top-11 bottom-0 w-80 bg-white border-l border-gray-200 z-30 flex flex-col shadow-lg transition-transform duration-200 ${planOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+            <div className="h-9 flex-shrink-0 flex items-center justify-between px-3 border-b border-gray-200 bg-indigo-50">
+              <span className="text-[9px] font-semibold text-indigo-500 uppercase tracking-widest">⊞ {role} Plan</span>
+              <button onClick={() => setPlanOpen(false)} className="text-indigo-400 hover:text-indigo-700 text-sm leading-none transition-colors">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 py-3">
+              <Markdown text={activePlan} className="text-[10px]" />
+            </div>
+          </div>
+          {!planOpen && (
+            <button onClick={() => setPlanOpen(true)} className="fixed right-0 top-28 z-30 bg-white border border-r-0 border-indigo-200 rounded-l-md shadow-sm hover:bg-indigo-50 transition-colors" style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}>
+              <span className="text-[8px] font-bold text-indigo-400 uppercase tracking-widest px-1 py-2">⊞ Plan</span>
+            </button>
+          )}
+        </>
+      )}
 
       {/* ── Report Viewer Modal ────────────────────────────────────────── */}
       {openReport && (
