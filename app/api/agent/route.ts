@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { runAgent } from '@/lib/agent'
 import { pushBranchAndOpenPR } from '@/lib/github'
-import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning } from '@/lib/db'
+import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog } from '@/lib/db'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from '@/lib/roles'
 
 export const runtime    = 'nodejs'
@@ -59,6 +59,9 @@ export async function POST(req: NextRequest) {
         } catch {}
       }
 
+      // Buffer log entries — skip heavy tool_result bodies to keep size manageable
+      const logBuffer: object[] = []
+
       try {
         let completionData: Record<string, unknown> | undefined
 
@@ -77,10 +80,18 @@ export async function POST(req: NextRequest) {
           },
           (event) => {
             send(event)
+            if (event.type !== 'tool_result') {
+              logBuffer.push({ ...event, ts: Date.now() })
+            } else {
+              // Save truncated tool_result so we know what was read, without storing full file contents
+              logBuffer.push({ type: event.type, message: event.message.slice(0, 200), ts: Date.now() })
+            }
             if (event.type === 'complete') completionData = { ...event.data, summary: event.message }
           },
           abort.signal,
         )
+
+        saveTaskLog(taskId, logBuffer)
 
         if (completionData && !completionData.commit_skipped) {
           // Check whether the agent actually committed anything before attempting a PR
@@ -143,6 +154,7 @@ export async function POST(req: NextRequest) {
           failTask(taskId, 'Agent did not reach task_complete')
         }
       } catch (err) {
+        saveTaskLog(taskId, logBuffer)
         failTask(taskId, String(err))
         send({ type: 'error', message: `Fatal: ${err}` })
       } finally {

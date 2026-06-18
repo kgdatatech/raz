@@ -122,6 +122,11 @@ if (VERSION < 5) {
   db.exec('PRAGMA user_version = 5')
 }
 
+if (VERSION < 6) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN log_json TEXT`) } catch {}
+  db.exec('PRAGMA user_version = 6')
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RepoRow {
@@ -224,6 +229,16 @@ export function createQueuedTask(
 
 export function savePlan(taskId: string, plan: string) {
   db.prepare(`UPDATE tasks SET plan = ? WHERE id = ?`).run(plan, taskId)
+}
+
+export function saveTaskLog(taskId: string, log: object[]): void {
+  db.prepare(`UPDATE tasks SET log_json = ? WHERE id = ?`).run(JSON.stringify(log), taskId)
+}
+
+export function getTaskLog(taskId: string): object[] | null {
+  const row = db.prepare(`SELECT log_json FROM tasks WHERE id = ?`).get(taskId) as { log_json: string | null } | undefined
+  if (!row?.log_json) return null
+  try { return JSON.parse(row.log_json) } catch { return null }
 }
 
 export function completeTask(id: string, prUrl: string | null, summary: string, filesChanged: string[]) {

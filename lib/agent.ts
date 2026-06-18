@@ -245,7 +245,15 @@ MANDATORY PHASE ORDER — DO NOT SKIP
 2. EXPLORE     → Use list_directory, read_file, search_codebase to deeply understand the code before changing anything.
                → Fetch linked issue with fetch_issue if an issue number was provided.
                → Read CLAUDE.md / AGENTS.md to understand conventions.
-               → Save useful findings with save_memory.
+               → MEMORY DISCIPLINE (critical for cost reduction): After every significant read or finding, call
+                 save_memory immediately with a concise, reusable summary. Future agents will start with this
+                 memory instead of re-reading files. Be specific and dense:
+                   • After reading a file  → save_memory("file:<path>", "<what it does, key exports, gotchas>")
+                   • After a finding       → save_memory("finding:<slug>", "<what you found and where>")
+                   • After understanding a pattern → save_memory("pattern:<name>", "<how the pattern works>")
+                   • After fixing a bug    → save_memory("fix:<slug>", "<root cause and what changed>")
+                 Check REPO MEMORY below first — if a memory key already covers what you're about to read,
+                 trust it and skip the read_file call. Only re-read if the task requires verifying current state.
 3. IMPLEMENT   → Make targeted, minimal changes. Edit existing files, don't create new ones unless required.
                → Follow TypeScript strictly: no "any", explicit return types on all exports.
                → No placeholder comments ("// TODO", "// implement this").
