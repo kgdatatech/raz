@@ -74,7 +74,11 @@ Audit deeply for: OWASP Top 10, hardcoded secrets, injection vulnerabilities, br
 insecure defaults, dependency CVEs, and data exposure risks.
 Always run security_scan and dependency_audit. Always call generate_report with structured findings.
 Every finding must include: file, line (if known), severity (CRITICAL/HIGH/MEDIUM/LOW), description, and remediation.
-Mark any finding that depends on framework convention as NEEDS VERIFICATION if you could not confirm it applies to this version.`,
+Mark any finding that depends on framework convention as NEEDS VERIFICATION if you could not confirm it applies to this version.
+
+AFTER generate_report: always call handoff_to_role to propose RAZ-Dev to remediate the findings.
+In the handoff description, list the top CRITICAL and HIGH findings (one line each) so RAZ-Dev knows what to fix.
+Workflow: use 'fix' if the issues are concrete code changes, 'feature' if new infrastructure is needed.`,
   },
 
   'RAZ-QA': {
@@ -125,7 +129,16 @@ These files describe the deployment target, build system, environment expectatio
 Ops decisions made without this context may be wrong or destructive.
 
 Focus on: build stability, dependency health, environment config correctness, CI/CD pipeline integrity.
-Always call generate_report with structured findings before completing.`,
+Always call generate_report with structured findings before completing.
+
+AFTER generate_report: always call handoff_to_role to propose the most appropriate next agent based on your findings.
+Use this decision tree:
+- CRITICAL/HIGH security issues found → RAZ-Sec (audit workflow) for a dedicated security audit
+- Significant code gaps, missing features, or broken functionality → RAZ-Dev (fix or feature workflow)
+- Missing or failing tests → RAZ-QA (test workflow)
+- Schema or migration issues → RAZ-Data (feature workflow)
+- Multiple concerns → pick the highest priority one and mention the others in the description
+Include a 2-3 sentence summary of the top findings in the handoff description so the next agent has immediate context.`,
   },
 
   'RAZ-Data': {

@@ -261,12 +261,14 @@ export default function RazDashboard() {
   const [finalCost,       setFinalCost]       = useState<number | null>(null)
   const [selectedTask,    setSelectedTask]    = useState<TaskRow | null>(null)
   const [planOpen,        setPlanOpen]        = useState(false)
-  const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues'>('history')
+  const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues' | 'reports'>('history')
   const [memory,          setMemory]          = useState<MemoryRow[]>([])
   const [messages,        setMessages]        = useState<AgentMessageRow[]>([])
   const [allIssues,       setAllIssues]       = useState<IssueRow[]>([])
   const [issueFilter,     setIssueFilter]     = useState<'open' | 'closed'>('open')
   const [prStatus,        setPrStatus]        = useState<PrStatusRow | null>(null)
+  const [reports,         setReports]         = useState<{ file: string; size: number; mtime: string }[]>([])
+  const [openReport,      setOpenReport]      = useState<{ file: string; content: string } | null>(null)
   const [queue,           setQueue]           = useState<QueueItem[]>([])
   const [handoffSuggestions, setHandoffSuggestions] = useState<HandoffSuggestion[]>([])
 
@@ -324,6 +326,15 @@ export default function RazDashboard() {
   async function loadPrStatus(taskId: string) {
     const data = await fetch(`/api/pr-status?taskId=${taskId}`).then((r) => r.json()).catch(() => null)
     setPrStatus(data)
+  }
+
+  function loadReports() {
+    fetch('/api/reports').then((r) => r.json()).then(setReports).catch(() => {})
+  }
+
+  async function openReportFile(file: string) {
+    const data = await fetch(`/api/reports?file=${encodeURIComponent(file)}`).then((r) => r.json()).catch(() => null)
+    if (data?.content) setOpenReport({ file, content: data.content })
   }
 
   async function handleDeleteMemory(key: string) {
@@ -402,6 +413,9 @@ export default function RazDashboard() {
 
       if (!res.ok || !res.body) { appendLog({ type: 'error', message: 'Failed to start agent.' }); return }
 
+      // Task was created server-side — refresh history immediately so the running card appears
+      if (selectedRepo) loadTasks(selectedRepo.id)
+
       const reader  = res.body.getReader()
       const decoder = new TextDecoder()
       let   buffer  = ''
@@ -438,6 +452,7 @@ export default function RazDashboard() {
         loadTasks(selectedRepo.id)
         if (bottomTab === 'comms') loadMessages(selectedRepo.id)
       }
+      loadReports()
     } catch (e) {
       appendLog({ type: 'error', message: `Connection error: ${e}` })
     } finally {
@@ -773,12 +788,13 @@ export default function RazDashboard() {
           {/* Bottom panel */}
           <div className="h-56 flex-shrink-0 border-t border-gray-200 flex flex-col">
             <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center">
-              {(['history', 'memory', 'comms', 'issues'] as const).map((tab) => (
+              {(['history', 'memory', 'comms', 'issues', 'reports'] as const).map((tab) => (
                 <button key={tab} onClick={() => {
                   setBottomTab(tab)
-                  if (tab === 'memory' && selectedRepo) loadMemory(selectedRepo.id)
-                  if (tab === 'comms'  && selectedRepo) loadMessages(selectedRepo.id)
-                  if (tab === 'issues' && selectedRepo) loadAllIssues(selectedRepo.id, issueFilter)
+                  if (tab === 'memory'  && selectedRepo) loadMemory(selectedRepo.id)
+                  if (tab === 'comms'   && selectedRepo) loadMessages(selectedRepo.id)
+                  if (tab === 'issues'  && selectedRepo) loadAllIssues(selectedRepo.id, issueFilter)
+                  if (tab === 'reports') loadReports()
                 }}
                   className={`h-full px-4 text-[9px] font-semibold uppercase tracking-widest border-b-2 transition-colors capitalize ${bottomTab === tab ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
                   {tab}
@@ -786,6 +802,7 @@ export default function RazDashboard() {
                   {tab === 'memory'  && memory.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{memory.length}</span>}
                   {tab === 'comms'   && messages.length > 0 && <span className="ml-1.5 text-[8px] text-violet-400">{messages.length}</span>}
                   {tab === 'issues'  && allIssues.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{allIssues.length}</span>}
+                  {tab === 'reports' && reports.length > 0 && <span className="ml-1.5 text-[8px] text-amber-500">{reports.length}</span>}
                 </button>
               ))}
             </div>
@@ -922,10 +939,64 @@ export default function RazDashboard() {
                 </div>
               </div>
             )}
+
+            {/* Reports tab */}
+            {bottomTab === 'reports' && (
+              <div className="flex-1 overflow-y-auto bg-white divide-y divide-gray-100">
+                {reports.length === 0 ? (
+                  <div className="h-full flex items-center justify-center flex-col gap-1">
+                    <span className="text-xs text-gray-300">No reports yet.</span>
+                    <span className="text-[10px] text-gray-300">RAZ-Sec and RAZ-Ops save reports here.</span>
+                  </div>
+                ) : reports.map((r) => {
+                  const parts    = r.file.replace('.md', '').split('-')
+                  const date     = parts.slice(0, 3).join('-')
+                  const namePart = parts.slice(3).join(' ')
+                  const kb       = (r.size / 1024).toFixed(1)
+                  return (
+                    <button key={r.file} onClick={() => openReportFile(r.file)}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 transition-colors group">
+                      <span className="text-lg leading-none flex-shrink-0">📄</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-medium text-gray-800 leading-snug capitalize">{namePart}</p>
+                        <p className="text-[9px] text-gray-400 mt-0.5">{date} · {kb} KB</p>
+                      </div>
+                      <span className="text-[9px] text-gray-300 group-hover:text-gray-500 transition-colors flex-shrink-0">→ open</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
         </div>
       </div>
+
+      {/* ── Report Viewer Modal ────────────────────────────────────────── */}
+      {openReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setOpenReport(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm">📄</span>
+                <span className="text-[10px] font-mono text-gray-500 truncate max-w-md">{openReport.file}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => {
+                  const blob = new Blob([openReport.content], { type: 'text/markdown' })
+                  const url  = URL.createObjectURL(blob)
+                  const a    = document.createElement('a'); a.href = url; a.download = openReport.file; a.click()
+                  URL.revokeObjectURL(url)
+                }} className="text-[10px] text-gray-400 hover:text-gray-600 transition-colors px-2 py-1 border border-gray-200 rounded">↓ download</button>
+                <button onClick={() => setOpenReport(null)} className="text-gray-400 hover:text-gray-700 text-base leading-none transition-colors">✕</button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <Markdown text={openReport.content} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Task Detail Modal ──────────────────────────────────────────── */}
       {selectedTask && (() => {
