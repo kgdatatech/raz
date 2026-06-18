@@ -175,32 +175,116 @@ function inlineRender(text: string): React.ReactNode {
   })
 }
 
-function Markdown({ text, className = '' }: { text: string; className?: string }) {
+function parseTableRow(line: string): string[] {
+  return line.split('|').slice(1, -1).map((c) => c.trim())
+}
+
+function isTableSeparator(line: string): boolean {
+  return /^\|[\s|:-]+\|$/.test(line.trim())
+}
+
+function Markdown({ text, className = '', report = false }: { text: string; className?: string; report?: boolean }) {
   const lines = text.split('\n')
   const elements: React.ReactNode[] = []
-  let listItems: string[] = []
+  let listItems:  string[]    = []
+  let tableLines: string[]    = []
+  let inCode     = false
+  let codeLines: string[]     = []
   let key = 0
+
+  const bodyText  = report ? 'text-sm' : 'text-xs'
+  const bodyColor = 'text-gray-700'
 
   function flushList() {
     if (!listItems.length) return
     elements.push(
-      <ul key={key++} className="list-disc list-inside space-y-0.5 my-1 pl-1">
-        {listItems.map((li, i) => <li key={i} className="text-xs text-gray-700 leading-relaxed">{inlineRender(li)}</li>)}
+      <ul key={key++} className="list-disc list-inside space-y-0.5 my-1.5 pl-1">
+        {listItems.map((li, i) => <li key={i} className={`${bodyText} ${bodyColor} leading-relaxed`}>{inlineRender(li)}</li>)}
       </ul>
     )
     listItems = []
   }
 
-  for (const line of lines) {
-    if (/^### /.test(line))       { flushList(); elements.push(<h3 key={key++} className="text-xs font-bold text-gray-800 mt-3 mb-0.5">{inlineRender(line.slice(4))}</h3>) }
-    else if (/^## /.test(line))   { flushList(); elements.push(<h2 key={key++} className="text-sm font-bold text-gray-900 mt-3 mb-1">{inlineRender(line.slice(3))}</h2>) }
-    else if (/^# /.test(line))    { flushList(); elements.push(<h1 key={key++} className="text-base font-bold text-gray-900 mt-2 mb-2">{inlineRender(line.slice(2))}</h1>) }
-    else if (/^[-*] /.test(line)) { listItems.push(line.slice(2)) }
-    else if (/^\d+\. /.test(line)) { listItems.push(line.replace(/^\d+\. /, '')) }
-    else if (line.trim() === '')  { flushList(); elements.push(<div key={key++} className="h-1.5" />) }
-    else                          { flushList(); elements.push(<p key={key++} className="text-xs text-gray-700 leading-relaxed">{inlineRender(line)}</p>) }
+  function flushTable() {
+    if (!tableLines.length) return
+    const rows = tableLines.filter((l) => !isTableSeparator(l)).map(parseTableRow)
+    if (rows.length === 0) { tableLines = []; return }
+    const headers  = rows[0]
+    const dataRows = rows.slice(1)
+    elements.push(
+      <div key={key++} className="overflow-x-auto my-3 rounded-lg border border-gray-200">
+        <table className="w-full text-xs border-collapse">
+          <thead className="bg-gray-50">
+            <tr>
+              {headers.map((h, i) => (
+                <th key={i} className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200 whitespace-nowrap">
+                  {inlineRender(h)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {dataRows.map((row, ri) => (
+              <tr key={ri} className="hover:bg-gray-50 transition-colors">
+                {row.map((cell, ci) => (
+                  <td key={ci} className={`px-3 py-2 ${bodyText} ${bodyColor} leading-relaxed align-top`}>
+                    {inlineRender(cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+    tableLines = []
   }
-  flushList()
+
+  function flushCode() {
+    if (!codeLines.length) return
+    elements.push(
+      <pre key={key++} className="my-2 overflow-x-auto rounded-lg bg-gray-900 text-gray-100 px-4 py-3 text-[10px] font-mono leading-relaxed">
+        <code>{codeLines.join('\n')}</code>
+      </pre>
+    )
+    codeLines = []
+  }
+
+  for (const line of lines) {
+    // Code fence
+    if (line.startsWith('```')) {
+      if (!inCode) { flushList(); flushTable(); inCode = true }
+      else         { inCode = false; flushCode() }
+      continue
+    }
+    if (inCode) { codeLines.push(line); continue }
+
+    // Table rows
+    if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+      flushList()
+      tableLines.push(line)
+      continue
+    } else {
+      flushTable()
+    }
+
+    // Horizontal rule
+    if (/^[-*_]{3,}$/.test(line.trim())) {
+      flushList()
+      elements.push(<hr key={key++} className="border-gray-200 my-4" />)
+      continue
+    }
+
+    if (/^#### /.test(line))      { flushList(); elements.push(<h4 key={key++} className={`text-xs font-bold text-gray-700 mt-2 mb-0.5`}>{inlineRender(line.slice(5))}</h4>) }
+    else if (/^### /.test(line))  { flushList(); elements.push(<h3 key={key++} className={`${report ? 'text-sm' : 'text-xs'} font-bold text-gray-800 mt-4 mb-1`}>{inlineRender(line.slice(4))}</h3>) }
+    else if (/^## /.test(line))   { flushList(); elements.push(<h2 key={key++} className={`${report ? 'text-base' : 'text-sm'} font-bold text-gray-900 mt-5 mb-1.5`}>{inlineRender(line.slice(3))}</h2>) }
+    else if (/^# /.test(line))    { flushList(); elements.push(<h1 key={key++} className={`${report ? 'text-xl' : 'text-base'} font-bold text-gray-900 mt-4 mb-2`}>{inlineRender(line.slice(2))}</h1>) }
+    else if (/^[-*] /.test(line)) { listItems.push(line.slice(2)) }
+    else if (/^\d+\. /.test(line)){ listItems.push(line.replace(/^\d+\. /, '')) }
+    else if (line.trim() === '')  { flushList(); elements.push(<div key={key++} className="h-2" />) }
+    else                          { flushList(); elements.push(<p key={key++} className={`${bodyText} ${bodyColor} leading-relaxed`}>{inlineRender(line)}</p>) }
+  }
+  flushList(); flushTable(); flushCode()
   return <div className={className}>{elements}</div>
 }
 
@@ -974,25 +1058,34 @@ export default function RazDashboard() {
 
       {/* ── Report Viewer Modal ────────────────────────────────────────── */}
       {openReport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setOpenReport(null)}>
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 flex-shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm">📄</span>
-                <span className="text-[10px] font-mono text-gray-500 truncate max-w-md">{openReport.file}</span>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8" style={{ background: 'rgba(0,0,0,0.6)' }} onClick={() => setOpenReport(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0 bg-gray-50 rounded-t-2xl">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="text-xl flex-shrink-0">📊</span>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-gray-800 truncate capitalize">
+                    {openReport.file.replace('.md', '').split('-').slice(3).join(' ')}
+                  </p>
+                  <p className="text-[9px] font-mono text-gray-400 mt-0.5">{openReport.file}</p>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-shrink-0 ml-4">
                 <button onClick={() => {
                   const blob = new Blob([openReport.content], { type: 'text/markdown' })
                   const url  = URL.createObjectURL(blob)
                   const a    = document.createElement('a'); a.href = url; a.download = openReport.file; a.click()
                   URL.revokeObjectURL(url)
-                }} className="text-[10px] text-gray-400 hover:text-gray-600 transition-colors px-2 py-1 border border-gray-200 rounded">↓ download</button>
-                <button onClick={() => setOpenReport(null)} className="text-gray-400 hover:text-gray-700 text-base leading-none transition-colors">✕</button>
+                }} className="text-[10px] font-medium text-gray-500 hover:text-gray-800 transition-colors px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-white">
+                  ↓ Download
+                </button>
+                <button onClick={() => setOpenReport(null)} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition-colors text-sm">✕</button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-5">
-              <Markdown text={openReport.content} />
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-8 py-6 min-h-0">
+              <Markdown text={openReport.content} report={true} />
             </div>
           </div>
         </div>
