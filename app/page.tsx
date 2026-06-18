@@ -12,11 +12,25 @@ interface RepoRow {
 }
 
 interface IssueRow {
-  id:       number
-  number:   number
-  title:    string
-  state:    string
-  labels:   string | null
+  id:        number
+  number:    number
+  title:     string
+  body:      string | null
+  state:     string
+  labels:    string | null
+  assignee:  string | null
+  synced_at: string
+}
+
+interface PrStatusRow {
+  id:              number
+  task_id:         string
+  pr_number:       number | null
+  state:           string | null
+  ci_status:       string | null
+  review_decision: string | null
+  merged:          number
+  checked_at:      string
 }
 
 interface TaskRow {
@@ -247,9 +261,12 @@ export default function RazDashboard() {
   const [finalCost,       setFinalCost]       = useState<number | null>(null)
   const [selectedTask,    setSelectedTask]    = useState<TaskRow | null>(null)
   const [planOpen,        setPlanOpen]        = useState(false)
-  const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms'>('history')
+  const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues'>('history')
   const [memory,          setMemory]          = useState<MemoryRow[]>([])
   const [messages,        setMessages]        = useState<AgentMessageRow[]>([])
+  const [allIssues,       setAllIssues]       = useState<IssueRow[]>([])
+  const [issueFilter,     setIssueFilter]     = useState<'open' | 'closed'>('open')
+  const [prStatus,        setPrStatus]        = useState<PrStatusRow | null>(null)
   const [queue,           setQueue]           = useState<QueueItem[]>([])
   const [handoffSuggestions, setHandoffSuggestions] = useState<HandoffSuggestion[]>([])
 
@@ -274,11 +291,14 @@ export default function RazDashboard() {
     setLocalPath(selectedRepo.local_path ?? '')
     setSelectedIssue(null)
     setIssues([])
+    setAllIssues([])
     setMemory([])
     setMessages([])
+    setPrStatus(null)
     loadTasks(selectedRepo.id)
     if (bottomTab === 'memory') loadMemory(selectedRepo.id)
     if (bottomTab === 'comms')  loadMessages(selectedRepo.id)
+    if (bottomTab === 'issues') loadAllIssues(selectedRepo.id, 'open')
   }, [selectedRepo])
 
   useEffect(() => {
@@ -295,6 +315,15 @@ export default function RazDashboard() {
 
   function loadMessages(repoId: number) {
     fetch(`/api/messages?repoId=${repoId}`).then((r) => r.json()).then(setMessages).catch(() => {})
+  }
+
+  function loadAllIssues(repoId: number, state: 'open' | 'closed') {
+    fetch(`/api/issues?repoId=${repoId}&state=${state}`).then((r) => r.json()).then(setAllIssues).catch(() => {})
+  }
+
+  async function loadPrStatus(taskId: string) {
+    const data = await fetch(`/api/pr-status?taskId=${taskId}`).then((r) => r.json()).catch(() => null)
+    setPrStatus(data)
   }
 
   async function handleDeleteMemory(key: string) {
@@ -744,17 +773,19 @@ export default function RazDashboard() {
           {/* Bottom panel */}
           <div className="h-56 flex-shrink-0 border-t border-gray-200 flex flex-col">
             <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center">
-              {(['history', 'memory', 'comms'] as const).map((tab) => (
+              {(['history', 'memory', 'comms', 'issues'] as const).map((tab) => (
                 <button key={tab} onClick={() => {
                   setBottomTab(tab)
                   if (tab === 'memory' && selectedRepo) loadMemory(selectedRepo.id)
                   if (tab === 'comms'  && selectedRepo) loadMessages(selectedRepo.id)
+                  if (tab === 'issues' && selectedRepo) loadAllIssues(selectedRepo.id, issueFilter)
                 }}
                   className={`h-full px-4 text-[9px] font-semibold uppercase tracking-widest border-b-2 transition-colors capitalize ${bottomTab === tab ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
                   {tab}
                   {tab === 'history' && tasks.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{tasks.length}</span>}
                   {tab === 'memory'  && memory.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{memory.length}</span>}
                   {tab === 'comms'   && messages.length > 0 && <span className="ml-1.5 text-[8px] text-violet-400">{messages.length}</span>}
+                  {tab === 'issues'  && allIssues.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{allIssues.length}</span>}
                 </button>
               ))}
             </div>
@@ -769,7 +800,7 @@ export default function RazDashboard() {
                   const isChild = !!t.parent_task_id
                   return (
                     <div key={t.id} className="flex items-center group hover:bg-gray-50 transition-colors">
-                      <button onClick={() => setSelectedTask(t)} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
+                      <button onClick={() => { setSelectedTask(t); setPrStatus(null); if (t.pr_url) loadPrStatus(t.id) }} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
                         {isChild && <span className="text-[8px] text-violet-400 flex-shrink-0">↳</span>}
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
                         <div className="flex-1 min-w-0">
@@ -832,6 +863,65 @@ export default function RazDashboard() {
                 ))}
               </div>
             )}
+
+            {/* Issues tab */}
+            {bottomTab === 'issues' && (
+              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+                <div className="flex items-center gap-2 px-4 py-1.5 border-b border-gray-100 flex-shrink-0">
+                  {(['open', 'closed'] as const).map((s) => (
+                    <button key={s} onClick={() => { setIssueFilter(s); if (selectedRepo) loadAllIssues(selectedRepo.id, s) }}
+                      className={`text-[9px] font-semibold px-2 py-0.5 rounded-full transition-colors capitalize ${issueFilter === s ? 'bg-gray-900 text-white' : 'text-gray-400 hover:text-gray-600'}`}>
+                      {s}
+                    </button>
+                  ))}
+                  {selectedRepo && (
+                    <button onClick={() => syncIssues(selectedRepo)} disabled={syncingIssues}
+                      className="ml-auto text-[9px] text-blue-500 hover:text-blue-700 disabled:text-gray-400 transition-colors">
+                      {syncingIssues ? 'syncing...' : '↻ sync'}
+                    </button>
+                  )}
+                </div>
+                <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+                  {!selectedRepo ? (
+                    <div className="h-full flex items-center justify-center"><span className="text-xs text-gray-300">Select a repo.</span></div>
+                  ) : allIssues.length === 0 ? (
+                    <div className="h-full flex items-center justify-center flex-col gap-1">
+                      <span className="text-xs text-gray-300">No {issueFilter} issues synced.</span>
+                      <span className="text-[10px] text-gray-300">Click ↻ sync to pull from GitHub.</span>
+                    </div>
+                  ) : allIssues.map((issue) => {
+                    const labels: string[] = issue.labels ? (() => { try { return JSON.parse(issue.labels) } catch { return [] } })() : []
+                    return (
+                      <div key={issue.id} className="px-4 py-2.5 hover:bg-gray-50 group">
+                        <div className="flex items-start gap-2">
+                          <span className="text-[9px] font-mono text-gray-300 flex-shrink-0 mt-0.5">#{issue.number}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] font-medium text-gray-800 leading-snug line-clamp-1">{issue.title}</p>
+                            {issue.body && <p className="text-[9px] text-gray-400 leading-relaxed line-clamp-1 mt-0.5">{issue.body}</p>}
+                            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                              {labels.map((l) => (
+                                <span key={l} className="text-[8px] px-1.5 py-px bg-blue-50 text-blue-600 border border-blue-100 rounded-full">{l}</span>
+                              ))}
+                              {issue.assignee && <span className="text-[8px] text-gray-400">@{issue.assignee}</span>}
+                            </div>
+                          </div>
+                          <span className="text-[8px] text-gray-300 flex-shrink-0 mt-0.5">{new Date(issue.synced_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                        </div>
+                        <div className="mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => {
+                            setSelectedIssue(issue as unknown as typeof selectedIssue)
+                            setWorkflow('fix')
+                            setTask(issue.title)
+                          }} className="text-[9px] text-indigo-500 hover:text-indigo-700 transition-colors">
+                            → Use as task
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
         </div>
@@ -874,6 +964,29 @@ export default function RazDashboard() {
                   <div>
                     <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Pull Request</div>
                     <a href={selectedTask.pr_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 underline underline-offset-2 break-all">{selectedTask.pr_url}</a>
+                    {prStatus && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {prStatus.state && (
+                          <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${prStatus.state === 'open' ? 'text-green-700 bg-green-50 border-green-200' : prStatus.state === 'merged' ? 'text-violet-700 bg-violet-50 border-violet-200' : 'text-gray-500 bg-gray-50 border-gray-200'}`}>
+                            {prStatus.state}
+                          </span>
+                        )}
+                        {prStatus.ci_status && (
+                          <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${prStatus.ci_status === 'success' ? 'text-green-700 bg-green-50 border-green-200' : prStatus.ci_status === 'failure' ? 'text-red-700 bg-red-50 border-red-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+                            CI: {prStatus.ci_status}
+                          </span>
+                        )}
+                        {prStatus.review_decision && (
+                          <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${prStatus.review_decision === 'APPROVED' ? 'text-green-700 bg-green-50 border-green-200' : prStatus.review_decision === 'CHANGES_REQUESTED' ? 'text-red-700 bg-red-50 border-red-200' : 'text-gray-500 bg-gray-50 border-gray-200'}`}>
+                            {prStatus.review_decision}
+                          </span>
+                        )}
+                        {prStatus.merged === 1 && (
+                          <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full border text-violet-700 bg-violet-50 border-violet-200">merged</span>
+                        )}
+                        <span className="text-[8px] text-gray-400 self-center">checked {new Date(prStatus.checked_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                    )}
                   </div>
                 )}
 
