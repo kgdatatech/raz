@@ -355,6 +355,7 @@ export default function RazDashboard() {
   const [openReport,      setOpenReport]      = useState<{ file: string; content: string } | null>(null)
   const [queue,           setQueue]           = useState<QueueItem[]>([])
   const [handoffSuggestions, setHandoffSuggestions] = useState<HandoffSuggestion[]>([])
+  const [historyFilter,      setHistoryFilter]      = useState('')
 
   const logRef   = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -382,9 +383,10 @@ export default function RazDashboard() {
     setMessages([])
     setPrStatus(null)
     loadTasks(selectedRepo.id)
-    if (bottomTab === 'memory') loadMemory(selectedRepo.id)
-    if (bottomTab === 'comms')  loadMessages(selectedRepo.id)
-    if (bottomTab === 'issues') loadAllIssues(selectedRepo.id, 'open')
+    loadMemory(selectedRepo.id)
+    loadMessages(selectedRepo.id)
+    loadAllIssues(selectedRepo.id, 'open')
+    loadReports()
   }, [selectedRepo])
 
   useEffect(() => {
@@ -606,6 +608,12 @@ export default function RazDashboard() {
     URL.revokeObjectURL(url)
   }
 
+  function copyLog() {
+    if (!log.length) return
+    const text = log.map((e) => `[${new Date(e.ts).toLocaleTimeString()}] ${TYPE_PREFIX[e.type]} ${e.message}`).join('\n')
+    navigator.clipboard.writeText(text).catch(() => {})
+  }
+
   const canRun    = !running && !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())
   const canQueue  = !!selectedRepo && !!task.trim() && (!!selectedRepo.local_path || !!localPath.trim())
   const activeRole = ROLES[role]
@@ -736,6 +744,21 @@ export default function RazDashboard() {
 
             <div className="border-t border-gray-100" />
 
+            {/* AGENTS.md scaffold shortcut */}
+            {selectedRepo?.local_path && (
+              <button
+                onClick={() => {
+                  setRole('RAZ-Ops')
+                  setWorkflow('strategy')
+                  setTask("Read package.json, README, and config files to understand the project stack, then write an AGENTS.md file documenting: framework and version, key commands (dev, build, test, lint), database and migration conventions, required environment variables, and any critical rules an AI agent must follow when working in this codebase.")
+                }}
+                className="w-full text-left px-2.5 py-2 rounded-md border border-dashed border-indigo-200 bg-indigo-50/50 hover:bg-indigo-50 transition-colors group"
+              >
+                <span className="text-[9px] font-semibold text-indigo-500 uppercase tracking-widest group-hover:text-indigo-700">⊞ Scaffold AGENTS.md</span>
+                <p className="text-[8px] text-indigo-400 mt-0.5 leading-snug">Pre-fill a RAZ-Ops task to document this repo's conventions</p>
+              </button>
+            )}
+
             {/* Task */}
             <div>
               <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Task</label>
@@ -793,7 +816,10 @@ export default function RazDashboard() {
               <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Agent Log</span>
               <div className="flex items-center gap-3">
                 {log.length > 0 && !running && (
-                  <button onClick={exportLogs} className="text-[9px] text-gray-400 hover:text-gray-600 transition-colors" title="Export log as .txt">↓ export</button>
+                  <>
+                    <button onClick={copyLog} className="text-[9px] text-gray-400 hover:text-gray-600 transition-colors" title="Copy log to clipboard">⎘ copy</button>
+                    <button onClick={exportLogs} className="text-[9px] text-gray-400 hover:text-gray-600 transition-colors" title="Export log as .txt">↓ export</button>
+                  </>
                 )}
                 {prUrl && <a href={prUrl} target="_blank" rel="noreferrer" className="text-[10px] text-green-700 font-semibold underline underline-offset-2">✓ View PR ↗</a>}
                 {(running || finalCost !== null) && <span className="text-[10px] font-mono text-gray-400">${(finalCost ?? liveCost).toFixed(4)}</span>}
@@ -889,33 +915,50 @@ export default function RazDashboard() {
 
             {/* History tab */}
             {bottomTab === 'history' && (
-              <div className="flex-1 overflow-y-auto bg-white divide-y divide-gray-100">
-                {tasks.length === 0 ? (
-                  <div className="h-full flex items-center justify-center"><span className="text-xs text-gray-300">{selectedRepo ? 'No tasks yet.' : 'Select a repo.'}</span></div>
-                ) : tasks.map((t) => {
-                  const files = parseFiles(t.files_changed)
-                  const isChild = !!t.parent_task_id
-                  return (
-                    <div key={t.id} className="flex items-center group hover:bg-gray-50 transition-colors">
-                      <button onClick={() => { setSelectedTask(t); setPrStatus(null); if (t.pr_url) loadPrStatus(t.id) }} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
-                        {isChild && <span className="text-[8px] text-violet-400 flex-shrink-0">↳</span>}
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className={`text-[9px] font-bold uppercase tracking-wide ${STATUS_TEXT[t.status] ?? 'text-gray-400'}`}>{t.status}</span>
-                            <span className="text-[9px] text-gray-400">{t.role ?? 'RAZ-Dev'} · {t.workflow ?? 'feature'}</span>
-                            {files.length > 0 && <span className="text-[8px] text-gray-300 font-mono">{files.length}f</span>}
-                            <span className="text-[9px] text-gray-300 ml-auto">{new Date(t.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-                          </div>
-                          <p className="text-[10px] text-gray-600 truncate mt-0.5">{t.description}</p>
-                          {t.status === 'failed' && t.error && <p className="text-[9px] text-red-400 truncate mt-0.5">{t.error}</p>}
+              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+                {tasks.length > 3 && (
+                  <div className="flex-shrink-0 px-3 py-1.5 border-b border-gray-100">
+                    <input value={historyFilter} onChange={(e) => setHistoryFilter(e.target.value)} placeholder="Filter by description, role, or status..." className="w-full text-[10px] bg-gray-50 border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-gray-400 placeholder-gray-300" />
+                  </div>
+                )}
+                <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+                  {(() => {
+                    const filtered = historyFilter.trim()
+                      ? tasks.filter((t) =>
+                          t.description.toLowerCase().includes(historyFilter.toLowerCase()) ||
+                          (t.role ?? '').toLowerCase().includes(historyFilter.toLowerCase()) ||
+                          t.status.toLowerCase().includes(historyFilter.toLowerCase())
+                        )
+                      : tasks
+                    if (filtered.length === 0) return (
+                      <div className="h-full flex items-center justify-center"><span className="text-xs text-gray-300">{selectedRepo ? (historyFilter ? 'No matching tasks.' : 'No tasks yet.') : 'Select a repo.'}</span></div>
+                    )
+                    return filtered.map((t) => {
+                      const files = parseFiles(t.files_changed)
+                      const isChild = !!t.parent_task_id
+                      return (
+                        <div key={t.id} className="flex items-center group hover:bg-gray-50 transition-colors">
+                          <button onClick={() => { setSelectedTask(t); setPrStatus(null); if (t.pr_url) loadPrStatus(t.id) }} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
+                            {isChild && <span className="text-[8px] text-violet-400 flex-shrink-0">↳</span>}
+                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[9px] font-bold uppercase tracking-wide ${STATUS_TEXT[t.status] ?? 'text-gray-400'}`}>{t.status}</span>
+                                <span className="text-[9px] text-gray-400">{t.role ?? 'RAZ-Dev'} · {t.workflow ?? 'feature'}</span>
+                                {files.length > 0 && <span className="text-[8px] text-gray-300 font-mono">{files.length}f</span>}
+                                <span className="text-[9px] text-gray-300 ml-auto">{new Date(t.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                              </div>
+                              <p className="text-[10px] text-gray-600 truncate mt-0.5">{t.description}</p>
+                              {t.status === 'failed' && t.error && <p className="text-[9px] text-red-400 truncate mt-0.5">{t.error}</p>}
+                            </div>
+                            <span className="text-gray-300 text-[10px] flex-shrink-0">›</span>
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); handleDeleteTask(t.id) }} className="px-3 py-2.5 text-[10px] text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0">✕</button>
                         </div>
-                        <span className="text-gray-300 text-[10px] flex-shrink-0">›</span>
-                      </button>
-                      <button onClick={(e) => { e.stopPropagation(); handleDeleteTask(t.id) }} className="px-3 py-2.5 text-[10px] text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0">✕</button>
-                    </div>
-                  )
-                })}
+                      )
+                    })
+                  })()}
+                </div>
               </div>
             )}
 
