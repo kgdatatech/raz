@@ -546,6 +546,8 @@ export default function RazDashboard() {
       if (next) {
         setQueue((prev) => prev.slice(1))
         queueRef.current = queueRef.current.slice(1)
+        setRole(next.role)
+        setWorkflow(next.workflow)
         setTimeout(() => runTask(next), 400)
       }
     }
@@ -567,6 +569,8 @@ export default function RazDashboard() {
     if (running) {
       setQueue((prev) => [...prev, { id: s.taskId, description: s.description, role: s.role, workflow: s.workflow, resumeTaskId: s.taskId }])
     } else {
+      setRole(s.role)
+      setWorkflow(s.workflow)
       runTask({ description: s.description, role: s.role, workflow: s.workflow, resumeTaskId: s.taskId })
     }
   }
