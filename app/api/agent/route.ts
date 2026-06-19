@@ -86,6 +86,7 @@ export async function POST(req: NextRequest) {
               // Save truncated tool_result so we know what was read, without storing full file contents
               logBuffer.push({ type: event.type, message: event.message.slice(0, 200), ts: Date.now() })
             }
+            if (event.type === 'usage') saveTaskLog(taskId, logBuffer)
             if (event.type === 'complete') completionData = { ...event.data, summary: event.message }
           },
           abort.signal,
