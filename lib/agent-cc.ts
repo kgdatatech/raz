@@ -119,12 +119,24 @@ function buildSystemPrompt(params: {
 }): string {
   const { memory, pastTasks, workflow, roleContext, issueContent, parentRole } = params
 
+  // Cap memory and history to avoid exceeding Windows CreateProcess command-line limit (32KB)
+  const MAX_MEMORY_CHARS  = 3000
+  const MAX_HISTORY_CHARS = 1500
+
+  const rawMemory = Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')
+  const memoryTruncated = rawMemory.length > MAX_MEMORY_CHARS
+    ? rawMemory.slice(0, MAX_MEMORY_CHARS) + '\n... (truncated)'
+    : rawMemory
   const memoryBlock = Object.keys(memory).length > 0
-    ? `\n\nREPO MEMORY (what you know about this codebase):\n${Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
+    ? `\n\nREPO MEMORY (what you know about this codebase):\n${memoryTruncated}`
     : ''
 
+  const rawHistory = pastTasks.slice(0, 5).map((t) => `- [${t.status}] [${t.workflow ?? 'feature'}] ${t.description.slice(0, 80)}${t.summary ? ` → ${t.summary.slice(0, 60)}` : ''}`).join('\n')
+  const historyTruncated = rawHistory.length > MAX_HISTORY_CHARS
+    ? rawHistory.slice(0, MAX_HISTORY_CHARS) + '\n... (truncated)'
+    : rawHistory
   const historyBlock = pastTasks.length > 0
-    ? `\n\nRECENT TASK HISTORY:\n${pastTasks.map((t) => `- [${t.status}] [${t.workflow ?? 'feature'}] ${t.description}${t.summary ? ` → ${t.summary}` : ''}`).join('\n')}`
+    ? `\n\nRECENT TASK HISTORY:\n${historyTruncated}`
     : ''
 
   const issueBlock      = issueContent ? `\n\nLINKED GITHUB ISSUE:\n${issueContent}` : ''
