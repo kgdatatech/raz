@@ -981,6 +981,7 @@ export default function RazDashboard() {
               </div>
               <textarea value={task} onChange={(e) => handleTaskInput(e.target.value)} rows={6}
                 placeholder="Describe what you need — RAZ detects the right agent automatically..."
+                onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canRun) { e.preventDefault(); handleRun() } }}
                 className="w-full bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 resize-none leading-relaxed" />
 
               {/* Dispatch chip */}
