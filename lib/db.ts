@@ -148,6 +148,18 @@ if (VERSION < 8) {
   db.exec('PRAGMA user_version = 8')
 }
 
+if (VERSION < 9) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS system_config (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO system_config (key, value) VALUES ('raz_mode', 'standard');
+    INSERT OR IGNORE INTO system_config (key, value) VALUES ('task_paused', '0');
+  `)
+  db.exec('PRAGMA user_version = 9')
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RepoRow {
@@ -500,6 +512,21 @@ export function getQuestionAnswer(id: string): string | null {
     `SELECT answer, answered_at FROM agent_questions WHERE id = ?`
   ).get(id) as { answer: string | null; answered_at: string | null } | undefined
   return row?.answered_at ? (row.answer ?? '') : null
+}
+
+// ─── System Config ────────────────────────────────────────────────────────────
+
+export function getConfig(key: string): string | null {
+  return db.prepare('SELECT value FROM system_config WHERE key = ?').pluck().get(key) as string | null ?? null
+}
+
+export function setConfig(key: string, value: string): void {
+  db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
+}
+
+export function getAllConfig(): Record<string, string> {
+  const rows = db.prepare('SELECT key, value FROM system_config').all() as { key: string; value: string }[]
+  return Object.fromEntries(rows.map((r) => [r.key, r.value]))
 }
 
 // On startup, any task still 'running' was interrupted by a server restart

@@ -385,6 +385,8 @@ export default function RazDashboard() {
   const [answeredQuestions,  setAnsweredQuestions]  = useState<Map<string, string>>(new Map())
   const [questionInputs,     setQuestionInputs]     = useState<Record<string, string>>({})
   const [pendingQuestionId,  setPendingQuestionId]  = useState<string | null>(null)
+  const [razMode,            setRazMode]            = useState<'standard' | 'supervised' | 'autonomous'>('standard')
+  const [isPaused,           setIsPaused]           = useState(false)
 
   const logRef   = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -400,6 +402,13 @@ export default function RazDashboard() {
       .then(({ owner: o, repos: r }) => { setOwner(o ?? ''); setRepos(r ?? []) })
       .catch(() => {})
       .finally(() => setLoadingRepos(false))
+    fetch('/api/config')
+      .then((r) => r.json())
+      .then((cfg) => {
+        if (cfg.raz_mode) setRazMode(cfg.raz_mode as 'standard' | 'supervised' | 'autonomous')
+        if (cfg.task_paused) setIsPaused(cfg.task_paused === '1')
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -598,17 +607,22 @@ export default function RazDashboard() {
             const event = JSON.parse(line.slice(6))
             appendLog(event)
             if (event.type === 'complete' && event.data?.prUrl) setPrUrl(event.data.prUrl as string)
-            // Handoff: surface as suggestion prompt, don't auto-run
+            // Handoff: auto-accept in supervised/autonomous, show suggestion in standard
             if (event.type === 'handoff' && event.data?.taskId) {
               const d = event.data
-              setHandoffSuggestions((prev) => [...prev, {
+              const suggestion = {
                 taskId:      d.taskId as string,
                 role:        d.role as RoleId,
                 description: d.description as string,
                 workflow:    (d.workflow as string) ?? ROLE_DEFAULT_WORKFLOW[d.role as RoleId],
                 branch:      (d.branch as string) ?? '',
                 fromRole:    params.role,
-              }])
+              }
+              if (razMode === 'supervised' || razMode === 'autonomous') {
+                setTimeout(() => acceptHandoff(suggestion), 800)
+              } else {
+                setHandoffSuggestions((prev) => [...prev, suggestion])
+              }
             }
           } catch {}
         }
@@ -624,6 +638,7 @@ export default function RazDashboard() {
     } finally {
       if (timerRef.current) clearInterval(timerRef.current)
       setRunning(false)
+      if (isPaused) handleResume()
       const next = queueRef.current[0]
       if (next) {
         setQueue((prev) => prev.slice(1))
@@ -659,6 +674,21 @@ export default function RazDashboard() {
 
   function dismissHandoff(taskId: string) {
     setHandoffSuggestions((prev) => prev.filter((h) => h.taskId !== taskId))
+  }
+
+  async function changeMode(mode: 'standard' | 'supervised' | 'autonomous') {
+    setRazMode(mode)
+    await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'raz_mode', value: mode }) }).catch(() => {})
+  }
+
+  async function handlePause() {
+    setIsPaused(true)
+    await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'task_paused', value: '1' }) }).catch(() => {})
+  }
+
+  async function handleResume() {
+    setIsPaused(false)
+    await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'task_paused', value: '0' }) }).catch(() => {})
   }
 
   async function submitAnswer(questionId: string, answer: string) {
@@ -736,12 +766,23 @@ export default function RazDashboard() {
           <span className="text-base font-bold tracking-tight text-gray-900" style={{ fontFamily: 'var(--font-display)' }}>RAZ</span>
           <span className="text-[10px] text-gray-400">Archon Systems · Agent v2</span>
         </div>
-        {owner && (
-          <div className="flex items-center gap-1.5">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            <span className="text-xs text-gray-500">{owner}</span>
+        <div className="flex items-center gap-3">
+          {/* Mode toggle */}
+          <div className="flex items-center rounded-md border border-gray-200 overflow-hidden">
+            {(['standard', 'supervised', 'autonomous'] as const).map((m) => (
+              <button key={m} onClick={() => changeMode(m)}
+                className={`px-2.5 py-1 text-[9px] font-semibold uppercase tracking-wider transition-colors ${razMode === m ? m === 'autonomous' ? 'bg-violet-600 text-white' : m === 'supervised' ? 'bg-amber-500 text-white' : 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>
+                {m === 'standard' ? 'STD' : m === 'supervised' ? 'SUP' : 'AUTO'}
+              </button>
+            ))}
           </div>
-        )}
+          {owner && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              <span className="text-xs text-gray-500">{owner}</span>
+            </div>
+          )}
+        </div>
       </header>
 
       {/* ── Body ────────────────────────────────────────────────────────── */}
@@ -867,7 +908,9 @@ export default function RazDashboard() {
                 ) : `Run ${role}`}
               </button>
               {!running && <button onClick={addToQueue} disabled={!canQueue} title="Add to queue" className="px-2.5 py-2 bg-white border border-gray-200 text-gray-500 text-[10px] font-medium rounded-md hover:border-gray-400 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">+Q</button>}
-              {running && <button onClick={() => { abortRef.current?.abort(); setRunning(false) }} className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-md hover:bg-red-700 transition-colors">Stop</button>}
+              {running && !isPaused && <button onClick={handlePause} className="px-2.5 py-2 bg-amber-500 text-white text-[10px] font-semibold rounded-md hover:bg-amber-600 transition-colors">Pause</button>}
+              {running && isPaused && <button onClick={handleResume} className="px-2.5 py-2 bg-green-600 text-white text-[10px] font-semibold rounded-md hover:bg-green-700 transition-colors animate-pulse">Resume</button>}
+              {running && <button onClick={() => { handleResume(); abortRef.current?.abort(); setRunning(false) }} className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-md hover:bg-red-700 transition-colors">Stop</button>}
             </div>
 
 
@@ -928,6 +971,15 @@ export default function RazDashboard() {
                 )}
               </div>
             </div>
+            {isPaused && running && (
+              <div className="flex-shrink-0 bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
+                  <span className="text-[10px] font-semibold text-amber-700">Agent paused — will resume at next tool boundary</span>
+                </div>
+                <button onClick={handleResume} className="px-2 py-0.5 text-[9px] font-semibold rounded bg-amber-500 text-white hover:bg-amber-600 transition-colors">Resume</button>
+              </div>
+            )}
             {pendingQuestionId && !answeredQuestions.has(pendingQuestionId) && (
               <div className="flex-shrink-0 bg-orange-50 border-b border-orange-200 px-4 py-2 flex items-center gap-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse flex-shrink-0" />
@@ -1040,10 +1092,10 @@ export default function RazDashboard() {
                 )
               })}
               {running && (
-                <div className={`flex gap-2 animate-pulse ${pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? 'text-orange-400' : 'text-gray-300'}`}>
+                <div className={`flex gap-2 animate-pulse ${isPaused ? 'text-amber-400' : pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? 'text-orange-400' : 'text-gray-300'}`}>
                   <span className="w-14 text-right text-[8px]" />
-                  <span className="w-3 text-center">{pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? '?' : '·'}</span>
-                  <span>{pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? 'waiting for your answer...' : 'working...'}</span>
+                  <span className="w-3 text-center">{isPaused ? '‖' : pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? '?' : '·'}</span>
+                  <span>{isPaused ? 'paused...' : pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? 'waiting for your answer...' : 'working...'}</span>
                 </div>
               )}
             </div>

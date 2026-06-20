@@ -16,7 +16,15 @@ const DB_DIR      = path.dirname(process.env.RAZ_DB_PATH ?? path.join(process.cw
 const REPORTS_DIR = path.join(DB_DIR, 'reports')
 
 import { randomUUID } from 'crypto'
-import { setMemory, getMemory, listTasks, savePlan, saveSessionId, createQuestion, getQuestionAnswer } from './db'
+import { setMemory, getMemory, listTasks, savePlan, saveSessionId, createQuestion, getQuestionAnswer, getConfig } from './db'
+
+async function checkPauseOrAbort() {
+  while (true) {
+    const paused = getConfig('task_paused')
+    if (paused !== '1') break
+    await new Promise((r) => setTimeout(r, 1_000))
+  }
+}
 
 const server = new McpServer({ name: 'raz', version: '1.0.0' })
 
@@ -26,6 +34,7 @@ server.tool(
   'Save your implementation plan before making any changes. Required before Write, Edit, or Bash.',
   { plan: z.string().describe('Full implementation plan') },
   async ({ plan }) => {
+    await checkPauseOrAbort()
     savePlan(TASK_ID, plan)
     return { content: [{ type: 'text' as const, text: 'Plan saved. Proceed with exploration and implementation.' }] }
   },
@@ -40,6 +49,7 @@ server.tool(
     value: z.string().describe('Concise summary — what it does, key exports, gotchas'),
   },
   async ({ key, value }) => {
+    await checkPauseOrAbort()
     if (REPO_ID) setMemory(REPO_ID, key, value)
     return { content: [{ type: 'text' as const, text: `Memory saved: ${key}` }] }
   },
@@ -55,11 +65,18 @@ server.tool(
     input_type: z.enum(['choice', 'text']).optional().describe('"choice" (buttons) or "text" (input box). Inferred from options if omitted.'),
   },
   async ({ question, options, input_type }) => {
+    await checkPauseOrAbort()
+    const mode = getConfig('raz_mode') ?? 'standard'
+    if (mode === 'autonomous') {
+      return { content: [{ type: 'text' as const, text: `Autonomous mode — no user input required. Use your best judgment to proceed.` }] }
+    }
+
     const qId = randomUUID()
     createQuestion(qId, TASK_ID, question, options, input_type ?? (options?.length ? 'choice' : 'text'))
 
     let waited = 0
     while (waited < 300_000) {
+      await checkPauseOrAbort()
       await new Promise((r) => setTimeout(r, 1_000))
       waited += 1_000
       const answer = getQuestionAnswer(qId)
@@ -77,6 +94,7 @@ server.tool(
   'Load everything this agent system knows about the current repo — findings, patterns, file roles, past decisions. Call this first at the start of every task.',
   {},
   async () => {
+    await checkPauseOrAbort()
     if (!REPO_ID) return { content: [{ type: 'text' as const, text: 'No repo context available.' }] }
     const memory   = getMemory(REPO_ID)
     const tasks    = listTasks(REPO_ID).slice(0, 10)
@@ -104,6 +122,7 @@ server.tool(
     notes:         z.string().optional().describe('Notes for the human reviewer (pre-existing issues, caveats)'),
   },
   async ({ summary, files_changed, notes }) => {
+    await checkPauseOrAbort()
     const marker     = JSON.stringify({ summary, files_changed, notes: notes ?? null })
     const markerPath = path.join(WORKTREE, '.raziel-completion.json')
     fs.writeFileSync(markerPath, marker, 'utf-8')
@@ -177,6 +196,7 @@ server.tool(
     workflow:    z.string().optional().describe('Workflow type: feature, fix, audit, test, strategy'),
   },
   async ({ role, description, workflow }) => {
+    await checkPauseOrAbort()
     const delegationPath = path.join(WORKTREE, '.raziel-delegate.json')
     fs.writeFileSync(delegationPath, JSON.stringify({ role, description, workflow }), 'utf-8')
 
@@ -208,6 +228,7 @@ server.tool(
     workflow:    z.string().optional(),
   },
   async ({ role, description, context, workflow }) => {
+    await checkPauseOrAbort()
     const handoffPath = path.join(WORKTREE, '.raziel-handoff.json')
     const existing = fs.existsSync(handoffPath)
       ? JSON.parse(fs.readFileSync(handoffPath, 'utf-8')) as unknown[]
