@@ -959,8 +959,8 @@ export default function RazDashboard() {
                                   {options.map((opt) => (
                                     <button key={opt.label} onClick={() => submitAnswer(qId, opt.label)}
                                       className="text-left px-2.5 py-2 border border-orange-200 rounded-md text-[10px] text-gray-700 bg-white hover:bg-orange-100 hover:border-orange-400 transition-colors">
-                                      <span className="font-semibold text-gray-800">{opt.label}</span>
-                                      {opt.description && <span className="text-gray-500 ml-1">— {opt.description}</span>}
+                                      <span className="font-semibold text-gray-800">{inlineRender(opt.label)}</span>
+                                      {opt.description && <span className="text-gray-500 ml-1">— {inlineRender(opt.description)}</span>}
                                     </button>
                                   ))}
                                 </div>
