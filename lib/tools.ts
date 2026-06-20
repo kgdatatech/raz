@@ -113,6 +113,8 @@ const SECRET_PATTERNS = [
   { name: 'DB Connection String', regex: /(postgres|mysql|mongodb)\+?:\/\/[^@:\s]+:[^@\s]+@/i },
   { name: 'Stripe Key',           regex: /sk_live_[a-zA-Z0-9]{24,}/ },
   { name: 'Supabase Service Key', regex: /eyJhbGciOiJIUzI1NiJ9\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/ },
+  { name: 'OpenAI API Key',       regex: /sk-proj-[a-zA-Z0-9_-]{50,}|sk-[a-zA-Z0-9]{48}/ },
+  { name: 'DATABASE_URL',         regex: /DATABASE_URL\s*[:=]\s*['"]?[a-zA-Z]+:\/\/[^'";\s\n]{10,}/ },
 ]
 
 function isBlockedPath(filePath: string): boolean {

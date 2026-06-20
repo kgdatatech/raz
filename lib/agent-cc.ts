@@ -8,6 +8,7 @@ import {
   getIssue,
   createQueuedTask, setTaskParent, createAgentMessage, updateAgentMessageResult,
   saveSessionId, getSessionId, getPendingQuestions,
+  saveWorktreePath, clearWorktreePath, STALE_WORKTREES,
 } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
 import type { AgentTask, AgentEvent, EventCallback } from './agent-sdk'
@@ -235,6 +236,20 @@ interface CCTextBlock    { type: 'text';     text: string }
 interface CCToolUseBlock { type: 'tool_use'; name: string; input: Record<string, unknown> }
 type CCBlock = CCTextBlock | CCToolUseBlock
 
+// ── Stale worktree cleanup ────────────────────────────────────────────────────
+const AGENT_TIMEOUT_MS = 45 * 60 * 1_000
+
+let staleWorktreesHandled = false
+function cleanupStaleWorktrees() {
+  if (staleWorktreesHandled) return
+  staleWorktreesHandled = true
+  for (const row of STALE_WORKTREES) {
+    if (!row.repo_path || !row.worktree_path) continue
+    try { cleanupWorktree(row.repo_path, row.worktree_path) } catch {}
+    try { clearWorktreePath(row.id) } catch {}
+  }
+}
+
 // ── Main agent loop ───────────────────────────────────────────────────────────
 export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?: AbortSignal): Promise<void> {
   const {
@@ -247,12 +262,15 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
   let worktreePath: string | null = existingWorktree ?? null
   let mcpConfigPath: string | null = null
 
+  cleanupStaleWorktrees()
+
   try {
     if (existingWorktree) {
       onEvent({ type: 'thinking', message: `[sub-agent] Starting in parent worktree: ${path.basename(existingWorktree)}` })
     } else {
       onEvent({ type: 'thinking', message: `Initializing worktree on branch: ${branch}` })
       worktreePath = setupWorktree(repoPath, branch)
+      saveWorktreePath(taskId, worktreePath)
     }
 
     let issueContent: string | undefined
@@ -322,6 +340,11 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     if (signal) {
       signal.addEventListener('abort', () => claudeProc.kill('SIGTERM'), { once: true })
     }
+
+    const timeoutHandle = setTimeout(() => {
+      claudeProc.kill('SIGTERM')
+      onEvent({ type: 'error', message: `Agent timed out after 45 minutes — process killed.` })
+    }, AGENT_TIMEOUT_MS)
 
     // ── Parse stream-json output ──────────────────────────────────────────────
     let buffer         = ''
@@ -430,6 +453,9 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       onEvent({ type: 'delegation', message: `← ${subRole} ${subFailed ? 'failed' : 'complete'}: ${subSummary.slice(0, 100)}`, data: { subRole, subTaskId, complete: true, failed: subFailed } })
     }, 500)
 
+    // ── Handoff poller — process handoffs as soon as the file appears ────────
+    const handoffPoller = setInterval(() => { processHandoffs() }, 2_000)
+
     // ── Question poller — surface ask_user questions to the UI ───────────────
     const emittedQuestions = new Set<string>()
     const questionPoller = setInterval(() => {
@@ -492,8 +518,10 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
 
     await new Promise<void>((resolve) => {
       claudeProc.on('close', () => {
+        clearTimeout(timeoutHandle)
         clearInterval(delegationPoller)
         clearInterval(questionPoller)
+        clearInterval(handoffPoller)
         if (buffer.trim()) processLine(buffer)
         processHandoffs()
         resolve()
@@ -509,6 +537,9 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     }
   } finally {
     if (mcpConfigPath) try { fs.unlinkSync(mcpConfigPath) } catch {}
-    if (worktreePath && !isSubAgent) cleanupWorktree(repoPath, worktreePath)
+    if (worktreePath && !isSubAgent) {
+      cleanupWorktree(repoPath, worktreePath)
+      clearWorktreePath(taskId)
+    }
   }
 }

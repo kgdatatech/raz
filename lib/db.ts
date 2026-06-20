@@ -161,6 +161,11 @@ if (VERSION < 9) {
   db.exec('PRAGMA user_version = 9')
 }
 
+if (VERSION < 10) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN worktree_path TEXT`) } catch {}
+  db.exec('PRAGMA user_version = 10')
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RepoRow {
@@ -320,6 +325,14 @@ export function getTaskMessages(taskId: string): unknown[] | null {
 
 export function resetTaskToRunning(taskId: string): void {
   db.prepare(`UPDATE tasks SET status = 'running', error = NULL, completed_at = NULL WHERE id = ?`).run(taskId)
+}
+
+export function saveWorktreePath(taskId: string, worktreePath: string): void {
+  db.prepare(`UPDATE tasks SET worktree_path = ? WHERE id = ?`).run(worktreePath, taskId)
+}
+
+export function clearWorktreePath(taskId: string): void {
+  db.prepare(`UPDATE tasks SET worktree_path = NULL WHERE id = ?`).run(taskId)
 }
 
 export function saveSessionId(taskId: string, sessionId: string): void {
@@ -529,6 +542,13 @@ export function getAllConfig(): Record<string, string> {
   const rows = db.prepare('SELECT key, value FROM system_config').all() as { key: string; value: string }[]
   return Object.fromEntries(rows.map((r) => [r.key, r.value]))
 }
+
+// Capture stale worktrees BEFORE marking as failed so agent-cc can clean them up on next start
+export const STALE_WORKTREES = db.prepare(`
+  SELECT t.id, t.worktree_path, r.local_path AS repo_path
+  FROM tasks t LEFT JOIN repos r ON t.repo_id = r.id
+  WHERE t.status = 'running' AND t.worktree_path IS NOT NULL
+`).all() as { id: string; worktree_path: string; repo_path: string | null }[]
 
 // On startup, any task still 'running' was interrupted by a server restart
 db.prepare(
