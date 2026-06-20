@@ -377,6 +377,8 @@ export default function RazDashboard() {
   const [rateLimitResetAt,   setRateLimitResetAt]   = useState<Date | null>(null)
   const [rateLimitSecondsLeft, setRateLimitSecondsLeft] = useState(0)
   const [selectedTask,    setSelectedTask]    = useState<TaskRow | null>(null)
+  const [taskLog,         setTaskLog]         = useState<LogEntry[] | null>(null)
+  const [taskLogLoading,  setTaskLogLoading]  = useState(false)
   const [planOpen,        setPlanOpen]        = useState(false)
   const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues' | 'reports' | 'brain'>('history')
   const [memory,          setMemory]          = useState<MemoryRow[]>([])
@@ -485,6 +487,16 @@ export default function RazDashboard() {
     const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/)
     if (!m) return null
     return { owner: m[1], repo: m[2], prNumber: Number(m[3]) }
+  }
+
+  async function loadTaskLog(taskId: string) {
+    setTaskLogLoading(true)
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/log`)
+      const data = await res.json() as LogEntry[]
+      setTaskLog(data.length ? data : null)
+    } catch { setTaskLog(null) }
+    finally { setTaskLogLoading(false) }
   }
 
   async function loadPRDetails(prUrl: string) {
@@ -1324,7 +1336,7 @@ export default function RazDashboard() {
                       const isChild = !!t.parent_task_id
                       return (
                         <div key={t.id} className="flex items-center group hover:bg-gray-50 transition-colors">
-                          <button onClick={() => { setSelectedTask(t); setPrStatus(null); setPrDetails(null); if (t.pr_url) { loadPrStatus(t.id); loadPRDetails(t.pr_url) } }} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
+                          <button onClick={() => { setSelectedTask(t); setTaskLog(null); setPrStatus(null); setPrDetails(null); loadTaskLog(t.id); if (t.pr_url) { loadPrStatus(t.id); loadPRDetails(t.pr_url) } }} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
                             {isChild && <span className="text-[8px] text-violet-400 flex-shrink-0">↳</span>}
                             <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
                             <div className="flex-1 min-w-0">
@@ -1547,7 +1559,7 @@ export default function RazDashboard() {
       {selectedTask && (() => {
         const files = parseFiles(selectedTask.files_changed)
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,0.45)' }} onClick={() => setSelectedTask(null)}>
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,0.45)' }} onClick={() => { setSelectedTask(null); setTaskLog(null) }}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[82vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
               {/* Modal header */}
               <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-200 flex-shrink-0">
@@ -1565,7 +1577,7 @@ export default function RazDashboard() {
                     </button>
                   )}
                   <button onClick={() => handleDeleteTask(selectedTask.id)} className="px-3 py-1 text-[10px] font-semibold rounded-md border border-red-100 text-red-400 hover:bg-red-50 transition-colors">Delete</button>
-                  <button onClick={() => setSelectedTask(null)} className="text-gray-400 hover:text-gray-700 text-base leading-none transition-colors">✕</button>
+                  <button onClick={() => { setSelectedTask(null); setTaskLog(null) }} className="text-gray-400 hover:text-gray-700 text-base leading-none transition-colors">✕</button>
                 </div>
               </div>
 
@@ -1736,6 +1748,49 @@ export default function RazDashboard() {
                     <div className="bg-gray-50 rounded-lg p-3 border border-gray-100"><Markdown text={selectedTask.plan} /></div>
                   </div>
                 )}
+
+                {/* Agent Log */}
+                <div className="border border-gray-200 rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                    <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Agent Log</span>
+                    {taskLog && taskLog.length > 0 && (
+                      <button onClick={() => {
+                        const text = taskLog.map((e) => `[${new Date(e.ts).toLocaleTimeString()}] ${TYPE_PREFIX[e.type] ?? '·'} ${e.message}${e.data ? ' ' + JSON.stringify(e.data) : ''}`).join('\n')
+                        const blob = new Blob([text], { type: 'text/plain' })
+                        const url  = URL.createObjectURL(blob)
+                        const a    = document.createElement('a'); a.href = url; a.download = `raz-log-${selectedTask.id.slice(0, 8)}.txt`; a.click(); URL.revokeObjectURL(url)
+                      }} className="text-[8px] text-gray-400 hover:text-gray-600 transition-colors">↓ export</button>
+                    )}
+                  </div>
+                  <div className="h-64 overflow-y-auto bg-gray-950 p-3 font-mono text-[10px] space-y-px">
+                    {taskLogLoading ? (
+                      <div className="flex items-center justify-center h-full"><span className="text-gray-500 text-[10px] animate-pulse">Loading log...</span></div>
+                    ) : !taskLog || taskLog.length === 0 ? (
+                      <div className="flex items-center justify-center h-full"><span className="text-gray-600 text-[10px]">No log stored for this task.</span></div>
+                    ) : taskLog.map((entry, i) => (
+                      <div key={i} className={`flex gap-2 leading-relaxed ${
+                        entry.type === 'error'      ? 'text-red-400' :
+                        entry.type === 'complete'   ? 'text-green-400' :
+                        entry.type === 'tool_call'  ? 'text-blue-400' :
+                        entry.type === 'plan'       ? 'text-indigo-400' :
+                        entry.type === 'delegation' ? 'text-violet-400' :
+                        entry.type === 'handoff'    ? 'text-amber-400' :
+                        entry.type === 'usage'      ? 'text-gray-600' :
+                        'text-gray-400'
+                      }`}>
+                        <span className="shrink-0 text-gray-600 w-16 text-right tabular-nums">
+                          {new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </span>
+                        <span className="shrink-0 w-3 text-center opacity-60">{TYPE_PREFIX[entry.type] ?? '·'}</span>
+                        <span className="flex-1 break-all [overflow-wrap:anywhere] min-w-0">
+                          {entry.type === 'tool_call'
+                            ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? <span className="text-gray-600"> — {JSON.stringify(entry.data.input).slice(0, 100)}</span> : ''}</>
+                            : entry.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
                 <div className="text-[9px] text-gray-400">
                   {new Date(selectedTask.created_at).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
