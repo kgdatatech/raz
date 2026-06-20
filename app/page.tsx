@@ -397,6 +397,8 @@ export default function RazDashboard() {
   const [pendingQuestionId,  setPendingQuestionId]  = useState<string | null>(null)
   const [razMode,            setRazMode]            = useState<'standard' | 'supervised' | 'autonomous'>('standard')
   const [isPaused,           setIsPaused]           = useState(false)
+  const [showOptions,        setShowOptions]        = useState(false)
+  const [showQuickTasks,     setShowQuickTasks]     = useState(false)
   const [dispatch,           setDispatch]           = useState<DispatchResult | null>(null)
   const [dispatchCountdown,  setDispatchCountdown]  = useState<number | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -869,7 +871,7 @@ export default function RazDashboard() {
         <div className="w-72 flex-shrink-0 flex flex-col border-r border-gray-200 bg-white overflow-y-auto">
           <div className="flex flex-col gap-3 p-3">
 
-            {/* Repo */}
+            {/* 1 · Repository */}
             <div>
               <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Repository</label>
               {loadingRepos ? (
@@ -885,154 +887,45 @@ export default function RazDashboard() {
                   <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">{selectedRepo.default_branch}</span>
                   {selectedRepo.local_path
                     ? <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5 font-mono truncate max-w-[200px]">{selectedRepo.local_path}</span>
-                    : <span className="text-[9px] bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 border border-amber-200">path not set</span>
+                    : <span className="text-[9px] bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 border border-amber-200">⚠ path not set — expand Options below</span>
                   }
                 </div>
               )}
             </div>
 
-            {/* Local path setup */}
-            {selectedRepo && !selectedRepo.local_path && (
-              <div>
-                <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Local Path</label>
-                <div className="flex gap-1.5">
-                  <input value={localPath} onChange={(e) => setLocalPath(e.target.value)} placeholder={`C:\\Projects\\${selectedRepo.github_repo}`} className="flex-1 bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900" />
-                  <button onClick={saveLocalPath} className="px-2.5 py-1.5 bg-gray-900 text-white text-[10px] font-medium rounded-md hover:bg-gray-700 transition-colors">Save</button>
-                </div>
-              </div>
-            )}
-
-            <div className="border-t border-gray-100" />
-
-            {/* Role */}
-            <div>
-              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Agent Role</label>
-              <div className="flex gap-1">
-                {ROLE_IDS.map((r) => {
-                  const def = ROLES[r]; const active = role === r
-                  return (
-                    <button key={r} onClick={() => { setRole(r); setWorkflow((prev) => ROLE_WORKFLOWS[r].includes(prev) ? prev : ROLE_DEFAULT_WORKFLOW[r]) }}
-                      title={def.description} className="flex-1 py-1.5 rounded-md border text-[9px] font-bold tracking-wide transition-all"
-                      style={active ? { background: def.color, borderColor: def.color, color: '#fff' } : { background: '#fff', borderColor: '#e5e7eb', color: '#9ca3af' }}>
-                      {def.badge}
-                    </button>
-                  )
-                })}
-              </div>
-              <p className="text-[9px] text-gray-400 mt-1 leading-snug">{activeRole.description}</p>
-            </div>
-
-            {/* Workflow */}
-            <div>
-              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Workflow</label>
-              <div className="flex flex-wrap gap-1">
-                {WORKFLOWS.filter((w) => ROLE_WORKFLOWS[role].includes(w.value)).map((w) => (
-                  <button key={w.value} onClick={() => setWorkflow(w.value)} className={`py-1.5 px-3 rounded-md border text-[10px] font-medium transition-colors ${workflow === w.value ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-400'}`}>
-                    {w.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Issue picker */}
-            {workflow === 'fix' && selectedRepo && (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Linked Issue</label>
-                  <button onClick={() => syncIssues(selectedRepo)} disabled={syncingIssues} className="text-[9px] text-blue-600 hover:text-blue-800 disabled:text-gray-400">{syncingIssues ? 'syncing...' : '↻ sync'}</button>
-                </div>
-                {issues.length === 0 ? (
-                  <p className="text-[10px] text-gray-400">{syncingIssues ? 'Loading...' : 'No open issues.'}</p>
-                ) : (
-                  <select value={selectedIssue?.id ?? ''} onChange={(e) => setSelectedIssue(issues.find((i) => i.id === Number(e.target.value)) ?? null)} className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900">
-                    <option value="">No issue — describe below</option>
-                    {issues.map((i) => <option key={i.id} value={i.id}>#{i.number} — {i.title}</option>)}
-                  </select>
-                )}
-              </div>
-            )}
-
-            <div className="border-t border-gray-100" />
-
-            {/* Self-improvement quick tasks */}
-            {selectedRepo?.local_path && (
-              <div className="border border-violet-100 rounded-lg overflow-hidden">
-                <div className="px-2.5 py-1.5 bg-violet-50 border-b border-violet-100 flex items-center justify-between">
-                  <span className="text-[9px] font-semibold text-violet-500 uppercase tracking-widest">Self-Improve</span>
-                  <span className="text-[8px] text-violet-300">RAZ audits itself</span>
-                </div>
-                <div className="divide-y divide-violet-50">
-                  {[
-                    { label: 'Full system audit', role: 'RAZ-Ops' as RoleId, workflow: 'self', desc: 'Audit the RAZ codebase (lib/agent-cc.ts, lib/mcp-server.ts, lib/db.ts, app/page.tsx) for gaps, bugs, and missing capabilities. Write a findings report with mcp__raz__generate_report. Then handoff to RAZ-Dev to implement the highest-priority improvement.' },
-                    { label: 'Write RAZ tests', role: 'RAZ-QA' as RoleId, workflow: 'test', desc: 'Examine lib/db.ts, lib/agent-cc.ts, lib/mcp-server.ts, and app/api/ routes. Write comprehensive tests for any untested functions — DB migrations, config functions, API routes. Use Vitest. All tests must pass.' },
-                    { label: 'Improve system prompt', role: 'RAZ-Ops' as RoleId, workflow: 'self', desc: 'Read lib/agent-cc.ts buildSystemPrompt() function. Analyze the current system prompt for gaps in agent instructions. Propose and implement improvements to the MANDATORY PHASE ORDER, tool descriptions, and quality rules. Ask user before editing agent-cc.ts core loop.' },
-                    { label: 'Update AGENTS.md', role: 'RAZ-Ops' as RoleId, workflow: 'strategy', desc: 'Read all files in lib/ and app/api/ to understand every capability RAZ has. Update or create AGENTS.md documenting the full tech stack, all available MCP tools with descriptions, key environment variables, and any rules an agent must follow when working in this repo.' },
-                  ].map((q) => (
-                    <button key={q.label} onClick={() => { setRole(q.role); setWorkflow(q.workflow); setTask(q.desc) }}
-                      className="w-full text-left px-2.5 py-2 hover:bg-violet-50 transition-colors">
-                      <span className="text-[9px] font-semibold text-violet-600">{q.label}</span>
-                      <p className="text-[8px] text-violet-400 mt-0.5 leading-snug line-clamp-1">{q.desc.slice(0, 60)}…</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* AGENTS.md scaffold shortcut */}
-            {selectedRepo?.local_path && (
-              <button
-                onClick={() => {
-                  setRole('RAZ-Ops')
-                  setWorkflow('strategy')
-                  setTask("Read package.json, README, and config files to understand the project stack, then write an AGENTS.md file documenting: framework and version, key commands (dev, build, test, lint), database and migration conventions, required environment variables, and any critical rules an AI agent must follow when working in this codebase.")
-                }}
-                className="w-full text-left px-2.5 py-2 rounded-md border border-dashed border-indigo-200 bg-indigo-50/50 hover:bg-indigo-50 transition-colors group"
-              >
-                <span className="text-[9px] font-semibold text-indigo-500 uppercase tracking-widest group-hover:text-indigo-700">⊞ Scaffold AGENTS.md</span>
-                <p className="text-[8px] text-indigo-400 mt-0.5 leading-snug">Pre-fill a RAZ-Ops task to document this repo's conventions</p>
-              </button>
-            )}
-
-            {/* Task */}
+            {/* 2 · Task input */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">
-                  {razMode === 'standard' ? 'Task' : 'Tell RAZ what you need'}
-                </label>
+                <label className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Task</label>
                 {dispatch && task.trim().length >= 8 && (
-                  <span className={`text-[8px] font-semibold px-1.5 py-0.5 rounded-full border transition-all ${dispatch.confidence === 'high' ? 'text-green-700 bg-green-50 border-green-200' : dispatch.confidence === 'medium' ? 'text-blue-700 bg-blue-50 border-blue-200' : 'text-gray-500 bg-gray-50 border-gray-200'}`}>
+                  <span className={`text-[8px] font-semibold px-1.5 py-0.5 rounded-full transition-all ${dispatch.confidence === 'high' ? 'text-green-700 bg-green-100' : dispatch.confidence === 'medium' ? 'text-blue-700 bg-blue-100' : 'text-gray-500 bg-gray-100'}`}>
                     {dispatch.confidence === 'high' ? '●' : dispatch.confidence === 'medium' ? '◐' : '○'} {dispatch.confidence}
                   </span>
                 )}
               </div>
-              <textarea value={task} onChange={(e) => handleTaskInput(e.target.value)} rows={5}
-                placeholder={razMode === 'standard'
-                  ? `Describe the task for ${role}...`
-                  : 'Describe what you need — RAZ will pick the right agent and workflow automatically...'}
+              <textarea value={task} onChange={(e) => handleTaskInput(e.target.value)} rows={6}
+                placeholder="Describe what you need — RAZ detects the right agent automatically..."
                 className="w-full bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 resize-none leading-relaxed" />
 
-              {/* Dispatch inference chip */}
+              {/* Dispatch chip */}
               {dispatch && task.trim().length >= 8 && (
                 <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center gap-1.5 bg-gray-900/5 border border-gray-200 rounded-md px-2 py-1">
-                    <span className="text-[8px] text-gray-400">→</span>
-                    <span className="text-[9px] font-semibold" style={{ color: ROLE_COLORS_CSS[dispatch.role] ?? '#6366f1' }}>{dispatch.role}</span>
+                  <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded px-2 py-1">
+                    <span className="text-[9px] font-bold" style={{ color: ROLE_COLORS_CSS[dispatch.role] ?? '#6366f1' }}>{dispatch.role}</span>
                     <span className="text-[8px] text-gray-300">·</span>
                     <span className="text-[9px] text-gray-500">{dispatch.workflow}</span>
                   </div>
-                  <span className="text-[8px] text-gray-400 italic">{dispatch.reason}</span>
-                  {dispatch.role !== role && (
-                    <button onClick={() => { setDispatch(null); cancelCountdown() }}
-                      className="text-[8px] text-gray-400 hover:text-gray-600 underline">override</button>
-                  )}
+                  <span className="text-[8px] text-gray-400 italic flex-1">{dispatch.reason}</span>
+                  <button onClick={() => { setDispatch(null); cancelCountdown(); setShowOptions(true) }}
+                    className="text-[8px] text-gray-400 hover:text-gray-700 underline">override</button>
                 </div>
               )}
 
-              {/* Countdown for Supervised / Autonomous */}
+              {/* Countdown */}
               {dispatchCountdown !== null && (
-                <div className="mt-1.5 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5">
+                <div className="mt-1.5 flex items-center justify-between bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5">
                   <span className="text-[9px] text-amber-700 font-medium">
-                    Running in {dispatchCountdown}s — {dispatch?.role} ({dispatch?.workflow})
+                    Running in {dispatchCountdown}s — {dispatch?.role} · {dispatch?.workflow}
                   </span>
                   <button onClick={cancelCountdown} className="text-[8px] font-semibold text-amber-600 hover:text-amber-800 border border-amber-300 rounded px-1.5 py-0.5 hover:bg-amber-100 transition-colors">
                     Cancel
@@ -1041,21 +934,139 @@ export default function RazDashboard() {
               )}
             </div>
 
-            {/* Run / Queue / Stop */}
+            {/* 3 · Run / Pause / Stop */}
             <div className="flex gap-1.5">
-              <button onClick={handleRun} disabled={!canRun} className="flex-1 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-white" style={{ background: canRun && !running ? (dispatch ? ROLE_COLORS_CSS[dispatch.role] ?? activeRole.color : activeRole.color) : '#111827' }}>
-                {running ? (
-                  <span className="flex items-center justify-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />{role} working...</span>
-                ) : dispatch ? `Run ${dispatch.role}` : `Run ${role}`}
+              <button onClick={handleRun} disabled={!canRun} className="flex-1 py-2.5 rounded-md text-xs font-bold tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-white"
+                style={{ background: canRun && !running ? (dispatch ? ROLE_COLORS_CSS[dispatch.role] ?? activeRole.color : activeRole.color) : '#111827' }}>
+                {running
+                  ? <span className="flex items-center justify-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />{role} working...</span>
+                  : dispatch ? `Run ${dispatch.role}` : `Run ${role}`}
               </button>
               {!running && <button onClick={addToQueue} disabled={!canQueue} title="Add to queue" className="px-2.5 py-2 bg-white border border-gray-200 text-gray-500 text-[10px] font-medium rounded-md hover:border-gray-400 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">+Q</button>}
               {running && !isPaused && <button onClick={handlePause} className="px-2.5 py-2 bg-amber-500 text-white text-[10px] font-semibold rounded-md hover:bg-amber-600 transition-colors">Pause</button>}
-              {running && isPaused && <button onClick={handleResume} className="px-2.5 py-2 bg-green-600 text-white text-[10px] font-semibold rounded-md hover:bg-green-700 transition-colors animate-pulse">Resume</button>}
+              {running && isPaused  && <button onClick={handleResume} className="px-2.5 py-2 bg-green-600 text-white text-[10px] font-semibold rounded-md hover:bg-green-700 transition-colors animate-pulse">Resume</button>}
               {running && <button onClick={() => { handleResume(); abortRef.current?.abort(); setRunning(false) }} className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-md hover:bg-red-700 transition-colors">Stop</button>}
             </div>
 
+            {/* 4 · Options collapsible (Role, Workflow, Issue, Local path) */}
+            <div className="border border-gray-200 rounded-md overflow-hidden">
+              <button onClick={() => setShowOptions((v) => !v)}
+                className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors">
+                <span className="text-[9px] font-semibold text-gray-500 uppercase tracking-widest">⚙ Options</span>
+                <div className="flex items-center gap-2">
+                  {!showOptions && (
+                    <span className="text-[9px] text-gray-400">{role} · {workflow}</span>
+                  )}
+                  <span className="text-[9px] text-gray-400">{showOptions ? '▲' : '▼'}</span>
+                </div>
+              </button>
 
-            {/* Queue list */}
+              {showOptions && (
+                <div className="px-3 py-2.5 flex flex-col gap-3 border-t border-gray-100">
+
+                  {/* Local path (only if missing) */}
+                  {selectedRepo && !selectedRepo.local_path && (
+                    <div>
+                      <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Local Path</label>
+                      <div className="flex gap-1.5">
+                        <input value={localPath} onChange={(e) => setLocalPath(e.target.value)} placeholder={`C:\\Projects\\${selectedRepo.github_repo}`} className="flex-1 bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900" />
+                        <button onClick={saveLocalPath} className="px-2.5 py-1.5 bg-gray-900 text-white text-[10px] font-medium rounded-md hover:bg-gray-700 transition-colors">Save</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Agent Role */}
+                  <div>
+                    <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Agent Role</label>
+                    <div className="flex gap-1">
+                      {ROLE_IDS.map((r) => {
+                        const def = ROLES[r]; const active = role === r
+                        return (
+                          <button key={r} onClick={() => { setRole(r); setWorkflow((prev) => ROLE_WORKFLOWS[r].includes(prev) ? prev : ROLE_DEFAULT_WORKFLOW[r]); setDispatch(null) }}
+                            title={def.description} className="flex-1 py-1.5 rounded-md border text-[9px] font-bold tracking-wide transition-all"
+                            style={active ? { background: def.color, borderColor: def.color, color: '#fff' } : { background: '#fff', borderColor: '#e5e7eb', color: '#9ca3af' }}>
+                            {def.badge}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <p className="text-[9px] text-gray-400 mt-1 leading-snug">{activeRole.description}</p>
+                  </div>
+
+                  {/* Workflow */}
+                  <div>
+                    <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Workflow</label>
+                    <div className="flex flex-wrap gap-1">
+                      {WORKFLOWS.filter((w) => ROLE_WORKFLOWS[role].includes(w.value)).map((w) => (
+                        <button key={w.value} onClick={() => setWorkflow(w.value)} className={`py-1.5 px-3 rounded-md border text-[10px] font-medium transition-colors ${workflow === w.value ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200 hover:border-gray-400'}`}>
+                          {w.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Issue picker (only for fix workflow) */}
+                  {workflow === 'fix' && selectedRepo && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Linked Issue</label>
+                        <button onClick={() => syncIssues(selectedRepo)} disabled={syncingIssues} className="text-[9px] text-blue-600 hover:text-blue-800 disabled:text-gray-400">{syncingIssues ? 'syncing...' : '↻ sync'}</button>
+                      </div>
+                      {issues.length === 0 ? (
+                        <p className="text-[10px] text-gray-400">{syncingIssues ? 'Loading...' : 'No open issues.'}</p>
+                      ) : (
+                        <select value={selectedIssue?.id ?? ''} onChange={(e) => setSelectedIssue(issues.find((i) => i.id === Number(e.target.value)) ?? null)} className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900">
+                          <option value="">No issue — describe in task box</option>
+                          {issues.map((i) => <option key={i.id} value={i.id}>#{i.number} — {i.title}</option>)}
+                        </select>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 5 · Quick Tasks collapsible (Self-Improve + Scaffold) */}
+            {selectedRepo?.local_path && (
+              <div className="border border-gray-200 rounded-md overflow-hidden">
+                <button onClick={() => setShowQuickTasks((v) => !v)}
+                  className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors">
+                  <span className="text-[9px] font-semibold text-gray-500 uppercase tracking-widest">⚡ Quick Tasks</span>
+                  <span className="text-[9px] text-gray-400">{showQuickTasks ? '▲' : '▼'}</span>
+                </button>
+
+                {showQuickTasks && (
+                  <div className="border-t border-gray-100">
+                    {/* Scaffold AGENTS.md */}
+                    <button
+                      onClick={() => { setRole('RAZ-Ops'); setWorkflow('strategy'); setTask("Read package.json, README, and config files to understand the project stack, then write an AGENTS.md file documenting: framework and version, key commands (dev, build, test, lint), database and migration conventions, required environment variables, and any critical rules an AI agent must follow when working in this codebase.") }}
+                      className="w-full text-left px-3 py-2 hover:bg-indigo-50 border-b border-gray-100 transition-colors">
+                      <span className="text-[9px] font-semibold text-indigo-600">⊞ Scaffold AGENTS.md</span>
+                      <p className="text-[8px] text-gray-400 mt-0.5">Document this repo's stack and conventions</p>
+                    </button>
+
+                    {/* Self-Improve presets */}
+                    <div className="px-3 pt-2 pb-1">
+                      <span className="text-[8px] font-semibold text-violet-400 uppercase tracking-widest">Self-Improve</span>
+                    </div>
+                    {[
+                      { label: 'Full system audit',    role: 'RAZ-Ops' as RoleId, workflow: 'self',     desc: 'Audit the RAZ codebase (lib/agent-cc.ts, lib/mcp-server.ts, lib/db.ts, app/page.tsx) for gaps, bugs, and missing capabilities. Write a findings report with mcp__raz__generate_report. Then handoff to RAZ-Dev to implement the highest-priority improvement.' },
+                      { label: 'Write RAZ tests',      role: 'RAZ-QA'  as RoleId, workflow: 'test',     desc: 'Examine lib/db.ts, lib/agent-cc.ts, lib/mcp-server.ts, and app/api/ routes. Write comprehensive tests for any untested functions — DB migrations, config functions, API routes. Use Vitest. All tests must pass.' },
+                      { label: 'Improve system prompt',role: 'RAZ-Ops' as RoleId, workflow: 'self',     desc: 'Read lib/agent-cc.ts buildSystemPrompt() function. Analyze the current system prompt for gaps in agent instructions. Propose and implement improvements to the MANDATORY PHASE ORDER, tool descriptions, and quality rules. Ask user before editing agent-cc.ts core loop.' },
+                      { label: 'Update AGENTS.md',     role: 'RAZ-Ops' as RoleId, workflow: 'strategy', desc: 'Read all files in lib/ and app/api/ to understand every capability RAZ has. Update or create AGENTS.md documenting the full tech stack, all available MCP tools with descriptions, key environment variables, and any rules an agent must follow when working in this repo.' },
+                    ].map((q) => (
+                      <button key={q.label} onClick={() => { setRole(q.role); setWorkflow(q.workflow); setTask(q.desc) }}
+                        className="w-full text-left px-3 py-2 hover:bg-violet-50 border-t border-gray-100 transition-colors">
+                        <span className="text-[9px] font-semibold text-violet-600">{q.label}</span>
+                        <p className="text-[8px] text-gray-400 mt-0.5 leading-snug line-clamp-1">{q.desc.slice(0, 56)}…</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 6 · Queue */}
             {queue.length > 0 && (
               <div className="border border-gray-200 rounded-md overflow-hidden">
                 <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
@@ -1078,7 +1089,6 @@ export default function RazDashboard() {
                 ))}
               </div>
             )}
-
 
           </div>
         </div>
