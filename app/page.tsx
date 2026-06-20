@@ -370,6 +370,11 @@ export default function RazDashboard() {
   const [prUrl,           setPrUrl]           = useState<string | null>(null)
   const [tasks,           setTasks]           = useState<TaskRow[]>([])
   const [loadingRepos,    setLoadingRepos]    = useState(true)
+  const [showAddRepo,     setShowAddRepo]     = useState(false)
+  const [addRepoUrl,      setAddRepoUrl]      = useState('')
+  const [addRepoPath,     setAddRepoPath]     = useState('')
+  const [addRepoSaving,   setAddRepoSaving]   = useState(false)
+  const [addRepoError,    setAddRepoError]    = useState<string | null>(null)
   const [activePlan,      setActivePlan]      = useState<string | null>(null)
   const [elapsed,         setElapsed]         = useState(0)
   const [liveCost,           setLiveCost]           = useState<number>(0)
@@ -577,6 +582,20 @@ export default function RazDashboard() {
       if (entry.type === 'error')    setFinalCost((prev) => prev ?? liveCost)
     }
     setTimeout(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' }), 50)
+  }
+
+  async function registerRepo() {
+    if (!addRepoUrl.trim() || !addRepoPath.trim()) return
+    setAddRepoSaving(true); setAddRepoError(null)
+    try {
+      const res  = await fetch('/api/repos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ githubUrl: addRepoUrl, localPath: addRepoPath }) })
+      const data = await res.json() as { ok?: boolean; repo?: RepoRow; error?: string }
+      if (!res.ok || data.error) { setAddRepoError(data.error ?? 'Failed'); return }
+      setRepos((prev) => prev.some((r) => r.id === data.repo!.id) ? prev.map((r) => r.id === data.repo!.id ? data.repo! : r) : [...prev, data.repo!])
+      setSelectedRepo(data.repo!)
+      setAddRepoUrl(''); setAddRepoPath(''); setShowAddRepo(false)
+    } catch (e) { setAddRepoError(String(e)) }
+    finally { setAddRepoSaving(false) }
   }
 
   async function saveLocalPath() {
@@ -903,23 +922,49 @@ export default function RazDashboard() {
 
             {/* 1 · Repository */}
             <div>
-              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Repository</label>
-              {loadingRepos ? (
-                <div className="h-8 bg-gray-100 rounded-md animate-pulse" />
-              ) : (
-                <select value={selectedRepo?.id ?? ''} onChange={(e) => setSelectedRepo(repos.find((r) => r.id === Number(e.target.value)) ?? null)} className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900">
-                  <option value="">Select repository...</option>
-                  {repos.map((r) => <option key={r.id} value={r.id}>{r.github_repo}</option>)}
-                </select>
-              )}
-              {selectedRepo && (
-                <div className="flex flex-wrap gap-1 mt-1.5">
-                  <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">{selectedRepo.default_branch}</span>
-                  {selectedRepo.local_path
-                    ? <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5 font-mono truncate max-w-[200px]">{selectedRepo.local_path}</span>
-                    : <span className="text-[9px] bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 border border-amber-200">⚠ path not set — expand Options below</span>
-                  }
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Repository</label>
+                <button onClick={() => { setShowAddRepo((v) => !v); setAddRepoError(null) }}
+                  className="text-[8px] text-gray-400 hover:text-gray-700 transition-colors font-medium">
+                  {showAddRepo ? '✕ cancel' : '+ register'}
+                </button>
+              </div>
+
+              {showAddRepo ? (
+                <div className="flex flex-col gap-1.5 p-2.5 border border-dashed border-gray-300 rounded-md bg-gray-50">
+                  <p className="text-[8px] text-gray-400">Add any repo RAZ can work on — including itself.</p>
+                  <input value={addRepoUrl} onChange={(e) => setAddRepoUrl(e.target.value)}
+                    placeholder="https://github.com/kgdatatech/raz"
+                    className="w-full bg-white border border-gray-200 rounded px-2 py-1 text-[10px] placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-gray-400" />
+                  <input value={addRepoPath} onChange={(e) => setAddRepoPath(e.target.value)}
+                    placeholder="C:\Users\keanu\Projects\raziel"
+                    className="w-full bg-white border border-gray-200 rounded px-2 py-1 text-[10px] font-mono placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-gray-400" />
+                  {addRepoError && <p className="text-[8px] text-red-500">{addRepoError}</p>}
+                  <button onClick={registerRepo} disabled={addRepoSaving || !addRepoUrl.trim() || !addRepoPath.trim()}
+                    className="py-1.5 bg-gray-900 text-white text-[10px] font-semibold rounded disabled:opacity-40 hover:bg-gray-700 transition-colors">
+                    {addRepoSaving ? 'Registering...' : 'Register Repo'}
+                  </button>
                 </div>
+              ) : (
+                <>
+                  {loadingRepos ? (
+                    <div className="h-8 bg-gray-100 rounded-md animate-pulse" />
+                  ) : (
+                    <select value={selectedRepo?.id ?? ''} onChange={(e) => setSelectedRepo(repos.find((r) => r.id === Number(e.target.value)) ?? null)} className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900">
+                      <option value="">Select repository...</option>
+                      {repos.map((r) => <option key={r.id} value={r.id}>{r.github_repo}</option>)}
+                    </select>
+                  )}
+                  {selectedRepo && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">{selectedRepo.default_branch}</span>
+                      {selectedRepo.local_path
+                        ? <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5 font-mono truncate max-w-[200px]">{selectedRepo.local_path}</span>
+                        : <span className="text-[9px] bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 border border-amber-200">⚠ path not set — expand Options below</span>
+                      }
+                    </div>
+                  )}
+                </>
               )}
             </div>
 

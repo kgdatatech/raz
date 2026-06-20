@@ -38,3 +38,22 @@ export async function PATCH(req: NextRequest) {
   updateRepoLocalPath(owner, repo, localPath)
   return NextResponse.json({ ok: true })
 }
+
+// POST — manually register a repo (for repos not returned by GitHub list)
+export async function POST(req: NextRequest) {
+  const { githubUrl, localPath, branch } = await req.json() as { githubUrl: string; localPath: string; branch?: string }
+  const match = githubUrl.trim().match(/github\.com[/:]([^/]+)\/([^/.]+?)(?:\.git)?$/)
+  if (!match) return NextResponse.json({ error: 'Invalid GitHub URL' }, { status: 400 })
+  if (!localPath?.trim()) return NextResponse.json({ error: 'Local path is required' }, { status: 400 })
+
+  const [, ghOwner, ghRepo] = match
+  let defaultBranch = branch?.trim() || 'main'
+
+  try {
+    const { data } = await octokit.repos.get({ owner: ghOwner, repo: ghRepo })
+    defaultBranch = data.default_branch
+  } catch {}
+
+  const row = upsertRepo(ghOwner, ghRepo, defaultBranch, localPath.trim())
+  return NextResponse.json({ ok: true, repo: row })
+}
