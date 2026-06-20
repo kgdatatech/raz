@@ -389,11 +389,13 @@ export default function RazDashboard() {
   const [razMode,            setRazMode]            = useState<'standard' | 'supervised' | 'autonomous'>('standard')
   const [isPaused,           setIsPaused]           = useState(false)
 
-  const logRef   = useRef<HTMLDivElement>(null)
-  const abortRef = useRef<AbortController | null>(null)
-  const startRef = useRef<number>(0)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const queueRef = useRef<QueueItem[]>([])
+  const logRef         = useRef<HTMLDivElement>(null)
+  const abortRef       = useRef<AbortController | null>(null)
+  const startRef       = useRef<number>(0)
+  const timerRef       = useRef<ReturnType<typeof setInterval> | null>(null)
+  const queueRef       = useRef<QueueItem[]>([])
+  const panelResizeRef = useRef<{ startY: number; startH: number } | null>(null)
+  const [panelH,       setPanelH]       = useState(224)
 
   useEffect(() => { queueRef.current = queue }, [queue])
 
@@ -692,6 +694,22 @@ export default function RazDashboard() {
     await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'task_paused', value: '0' }) }).catch(() => {})
   }
 
+  function startPanelResize(e: React.MouseEvent) {
+    panelResizeRef.current = { startY: e.clientY, startH: panelH }
+    const onMove = (ev: MouseEvent) => {
+      if (!panelResizeRef.current) return
+      const delta = panelResizeRef.current.startY - ev.clientY
+      setPanelH(Math.max(150, Math.min(640, panelResizeRef.current.startH + delta)))
+    }
+    const onUp = () => {
+      panelResizeRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   async function submitAnswer(questionId: string, answer: string) {
     if (!answer.trim()) return
     await fetch('/api/agent/answer', {
@@ -766,14 +784,23 @@ export default function RazDashboard() {
           </svg>
           <span className="text-base font-bold tracking-tight text-gray-900" style={{ fontFamily: 'var(--font-display)' }}>RAZ</span>
           <span className="text-[10px] text-gray-400">Archon Systems · Agent v2</span>
+          {razMode !== 'standard' && (
+            <span className={`text-[8px] font-semibold px-1.5 py-0.5 rounded ${razMode === 'autonomous' ? 'bg-violet-900/40 text-violet-400 border border-violet-700/40' : 'bg-amber-900/40 text-amber-400 border border-amber-700/40'}`}>
+              {razMode === 'autonomous' ? '⚡ Autonomous' : '◎ Supervised'}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {/* Mode toggle */}
           <div className="flex items-center rounded-md border border-gray-200 overflow-hidden">
-            {(['standard', 'supervised', 'autonomous'] as const).map((m) => (
-              <button key={m} onClick={() => changeMode(m)}
-                className={`px-2.5 py-1 text-[9px] font-semibold uppercase tracking-wider transition-colors ${razMode === m ? m === 'autonomous' ? 'bg-violet-600 text-white' : m === 'supervised' ? 'bg-amber-500 text-white' : 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>
-                {m === 'standard' ? 'STD' : m === 'supervised' ? 'SUP' : 'AUTO'}
+            {([
+              { key: 'standard',   label: 'Directed',   tip: 'RAZ detects role & workflow, shows it to you, waits for approval before running.' },
+              { key: 'supervised', label: 'Supervised',  tip: 'RAZ decides role & workflow, handoffs auto-chain. Questions still reach you.' },
+              { key: 'autonomous', label: 'Autonomous',  tip: 'RAZ runs everything — detects, chains, skips questions. You just watch and review PRs.' },
+            ] as const).map(({ key: m, label, tip }) => (
+              <button key={m} onClick={() => changeMode(m)} title={tip}
+                className={`px-3 py-1 text-[9px] font-semibold tracking-wide transition-colors ${razMode === m ? m === 'autonomous' ? 'bg-violet-600 text-white' : m === 'supervised' ? 'bg-amber-500 text-white' : 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>
+                {label}
               </button>
             ))}
           </div>
@@ -1127,7 +1154,12 @@ export default function RazDashboard() {
           </div>
 
           {/* Bottom panel */}
-          <div className={`${bottomTab === 'brain' ? 'h-96' : 'h-56'} flex-shrink-0 border-t border-gray-200 flex flex-col transition-all duration-200`}>
+          <div className="flex-shrink-0 border-gray-200 flex flex-col" style={{ height: panelH }}>
+            {/* Drag-to-resize handle */}
+            <div onMouseDown={startPanelResize}
+              className="h-1.5 flex-shrink-0 bg-gray-100 hover:bg-indigo-300 cursor-row-resize transition-colors border-t border-gray-200 group flex items-center justify-center">
+              <div className="w-8 h-0.5 rounded-full bg-gray-300 group-hover:bg-indigo-400 transition-colors" />
+            </div>
             <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center">
               {(['history', 'memory', 'comms', 'issues', 'reports', 'brain'] as const).map((tab) => (
                 <button key={tab} onClick={() => {

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback } from 'react'
 
 interface BrainData {
   repos:           { id: number; github_owner: string; github_repo: string }[]
@@ -20,203 +20,272 @@ const ROLE_COLORS: Record<string, string> = {
 
 const ALL_ROLES = ['RAZ-Dev', 'RAZ-Sec', 'RAZ-QA', 'RAZ-Ops', 'RAZ-Data']
 
-const W = 680
-const H = 380
+// Layout constants
+const W          = 720
+const ROLE_X     = 110
+const REPO_X     = 580
+const PAD_Y      = 56
+const ROLE_GAP   = 72   // px between role nodes
+const REPO_GAP   = 54   // px between active repo nodes
+const INACTIVE_GAP = 28 // px between inactive repo dots
+const ROLE_R     = 22   // role node radius
+const CARD_W     = 110
+const CARD_H     = 38
 
 export default function BrainView() {
   const [data,    setData]    = useState<BrainData | null>(null)
   const [loading, setLoading] = useState(true)
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null)
-  const svgRef = useRef<SVGSVGElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const svgRef       = useRef<SVGSVGElement>(null)
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
+    setLoading(true)
     fetch('/api/brain').then((r) => r.json()).then(setData).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <div className="h-full flex items-center justify-center text-xs text-gray-400 animate-pulse">Loading brain map...</div>
-  if (!data)   return <div className="h-full flex items-center justify-center text-xs text-gray-400">No data available.</div>
+  useEffect(() => { refresh() }, [refresh])
 
-  // ── Layout ──────────────────────────────────────────────────────────────────
-  const roleX  = 120
-  const repoX  = W - 120
-  const padY   = 60
-  const roleH  = (H - padY * 2) / Math.max(ALL_ROLES.length - 1, 1)
-  const repoH  = data.repos.length > 1 ? (H - padY * 2) / (data.repos.length - 1) : 0
+  if (loading) return (
+    <div className="h-full flex items-center justify-center text-xs text-gray-500 animate-pulse bg-gray-950 rounded-lg">
+      Loading brain map...
+    </div>
+  )
+  if (!data) return (
+    <div className="h-full flex items-center justify-center text-xs text-gray-500 bg-gray-950 rounded-lg">
+      No data available.
+    </div>
+  )
 
-  const rolePos: Record<string, { x: number; y: number }> = {}
-  ALL_ROLES.forEach((r, i) => { rolePos[r] = { x: roleX, y: padY + i * roleH } })
+  // ── Categorise repos ──────────────────────────────────────────────────────
+  const activeRepoIds = new Set(data.roleCounts.map((rc) => rc.repo_id))
+  const activeRoleIds = new Set(data.roleCounts.map((rc) => rc.role))
 
-  const repoPos: Record<number, { x: number; y: number }> = {}
-  data.repos.forEach((repo, i) => {
-    repoPos[repo.id] = { x: repoX, y: data.repos.length === 1 ? H / 2 : padY + i * repoH }
-  })
+  const activeRepos   = data.repos.filter((r) => activeRepoIds.has(r.id))
+  const inactiveRepos = data.repos.filter((r) => !activeRepoIds.has(r.id))
 
-  // active role → repo edges
-  const roleRepoEdges = data.roleCounts.map((rc) => ({
-    fromRole: rc.role,
-    toRepoId: rc.repo_id,
-    count:    rc.count,
-  }))
-
-  // which roles/repos are connected
-  const activeRoles = new Set(data.roleCounts.map((rc) => rc.role))
-  const activeRepos = new Set(data.roleCounts.map((rc) => rc.repo_id))
-
-  // role → role connections
-  const roleRoleEdges = data.roleConnections
-
-  const memMap: Record<number, number> = {}
+  const memMap: Record<number, number>  = {}
   data.memCounts.forEach((m) => { memMap[m.repo_id] = m.count })
 
   const taskMap: Record<number, { total: number; completed: number }> = {}
   data.tasksByRepo.forEach((t) => { taskMap[t.repo_id] = { total: t.total, completed: t.completed } })
 
+  // ── Dynamic SVG height ────────────────────────────────────────────────────
+  const roleSpan      = PAD_Y + (ALL_ROLES.length - 1) * ROLE_GAP + PAD_Y
+  const activeSpan    = PAD_Y + Math.max(0, activeRepos.length - 1) * REPO_GAP + CARD_H + 20
+  const inactiveSpan  = inactiveRepos.length > 0 ? inactiveRepos.length * INACTIVE_GAP + 40 : 0
+  const repoSpan      = activeSpan + inactiveSpan
+  const SVG_H         = Math.max(roleSpan, repoSpan, 300)
+
+  // ── Positions ─────────────────────────────────────────────────────────────
+  const roleCenter = SVG_H / 2
+  const roleCY     = roleCenter - ((ALL_ROLES.length - 1) * ROLE_GAP) / 2
+
+  const rolePos: Record<string, { x: number; y: number }> = {}
+  ALL_ROLES.forEach((r, i) => { rolePos[r] = { x: ROLE_X, y: roleCY + i * ROLE_GAP } })
+
+  // Active repos: centered in the top portion
+  const activeStart = (SVG_H - (activeRepos.length - 1) * REPO_GAP - CARD_H) / 2 + CARD_H / 2
+  const repoPos: Record<number, { x: number; y: number }> = {}
+  activeRepos.forEach((repo, i) => {
+    repoPos[repo.id] = { x: REPO_X, y: Math.max(PAD_Y, activeStart) + i * REPO_GAP }
+  })
+
+  // Inactive repos: small dots below active repos
+  const inactiveStartY = activeRepos.length > 0
+    ? (repoPos[activeRepos[activeRepos.length - 1]?.id]?.y ?? 0) + CARD_H / 2 + 36
+    : PAD_Y
+  inactiveRepos.forEach((repo, i) => {
+    repoPos[repo.id] = { x: REPO_X, y: inactiveStartY + i * INACTIVE_GAP }
+  })
+
+  // ── Edges ────────────────────────────────────────────────────────────────
+  const roleRepoEdges = data.roleCounts.map((rc) => ({
+    fromRole: rc.role,
+    toRepoId: rc.repo_id,
+    count:    rc.count,
+  }))
   const maxCount = Math.max(...roleRepoEdges.map((e) => e.count), 1)
 
-  function showTooltip(e: React.MouseEvent, text: string) {
-    const rect = svgRef.current?.getBoundingClientRect()
+  function showTip(e: React.MouseEvent, text: string) {
+    const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
-    setTooltip({ x: e.clientX - rect.left + 10, y: e.clientY - rect.top - 10, text })
+    setTooltip({ x: e.clientX - rect.left + 12, y: e.clientY - rect.top - 28, text })
   }
 
+  const unusedRoles = ALL_ROLES.filter((r) => !activeRoleIds.has(r))
+
   return (
-    <div className="relative h-full bg-gray-950 rounded-lg overflow-hidden select-none">
-      {/* Legend */}
-      <div className="absolute top-2 right-3 flex flex-col gap-1 z-10">
-        <div className="text-[8px] font-semibold text-gray-500 uppercase tracking-widest mb-0.5">Legend</div>
-        {ALL_ROLES.map((r) => (
-          <div key={r} className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full" style={{ background: ROLE_COLORS[r] }} />
-            <span className="text-[8px] text-gray-400">{r}</span>
-          </div>
-        ))}
-        <div className="mt-1 flex items-center gap-1.5">
-          <div className="w-4 h-0.5 bg-blue-400 opacity-60" />
-          <span className="text-[8px] text-gray-400">task link</span>
+    <div ref={containerRef} className="relative h-full bg-gray-950 rounded-lg overflow-hidden select-none flex flex-col">
+
+      {/* ── Top bar ──────────────────────────────────────────────────────── */}
+      <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-gray-800/60">
+        <div className="flex items-center gap-3">
+          {unusedRoles.length > 0 && (
+            <span className="text-[8px] text-amber-400 bg-amber-950/60 border border-amber-800/50 rounded px-1.5 py-0.5">
+              ⚠ Never used: {unusedRoles.map((r) => r.replace('RAZ-', '')).join(', ')}
+            </span>
+          )}
+          <span className="text-[8px] text-gray-600">
+            {roleRepoEdges.length} connections · {activeRepos.length} active repos · {inactiveRepos.length} inactive
+          </span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-4 h-0.5 bg-violet-400 opacity-60" style={{ borderTop: '1px dashed' }} />
-          <span className="text-[8px] text-gray-400">delegation</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-4 h-0.5 bg-green-400 opacity-60" style={{ borderTop: '1px dashed' }} />
-          <span className="text-[8px] text-gray-400">handoff</span>
-        </div>
+        <button onClick={refresh} className="text-[8px] text-gray-600 hover:text-gray-300 transition-colors px-1.5 py-0.5 rounded hover:bg-gray-800">
+          ↻ Refresh
+        </button>
       </div>
 
-      {/* Gaps label */}
-      {ALL_ROLES.filter((r) => !activeRoles.has(r)).length > 0 && (
-        <div className="absolute top-2 left-3 text-[8px] text-amber-500 bg-amber-950/60 rounded px-1.5 py-0.5 border border-amber-800/40 z-10">
-          ⚠ {ALL_ROLES.filter((r) => !activeRoles.has(r)).join(', ')} — never used
-        </div>
-      )}
+      {/* ── SVG scroll area ──────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <svg ref={svgRef} width="100%" style={{ minHeight: SVG_H }} viewBox={`0 0 ${W} ${SVG_H}`}
+          preserveAspectRatio="xMidYMid meet" onMouseLeave={() => setTooltip(null)}>
+          <defs>
+            <filter id="glow-brain">
+              <feGaussianBlur stdDeviation="2.5" result="blur" />
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+            </filter>
+          </defs>
 
-      <svg ref={svgRef} width="100%" height="100%" viewBox={`0 0 ${W} ${H}`}
-        onMouseLeave={() => setTooltip(null)}>
-        <defs>
-          <filter id="glow">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-        </defs>
+          {/* ── Role→Repo edges ────────────────────────────────────────── */}
+          {roleRepoEdges.map((e, i) => {
+            const from = rolePos[e.fromRole]
+            const to   = repoPos[e.toRepoId]
+            if (!from || !to) return null
+            const t     = e.count / maxCount
+            const w     = 1 + t * 2.5
+            const alpha = 0.18 + t * 0.55
+            const mx    = from.x + (to.x - from.x) * 0.55
+            return (
+              <path key={`re-${i}`}
+                d={`M ${from.x + ROLE_R} ${from.y} C ${mx} ${from.y}, ${mx} ${to.y}, ${to.x - CARD_W / 2 - 4} ${to.y}`}
+                fill="none" stroke={ROLE_COLORS[e.fromRole] ?? '#6366f1'}
+                strokeWidth={w} strokeOpacity={alpha}
+                style={{ cursor: 'crosshair' }}
+                onMouseMove={(ev) => showTip(ev, `${e.fromRole} → ${data.repos.find((r) => r.id === e.toRepoId)?.github_repo}: ${e.count} task${e.count !== 1 ? 's' : ''}`)}
+              />
+            )
+          })}
 
-        {/* ── Role → Repo edges ─────────────────────────────────── */}
-        {roleRepoEdges.map((e, i) => {
-          const from = rolePos[e.fromRole]
-          const to   = repoPos[e.toRepoId]
-          if (!from || !to) return null
-          const t     = e.count / maxCount
-          const width = 1 + t * 3
-          const alpha = 0.2 + t * 0.6
-          const mx    = (from.x + to.x) / 2
-          return (
-            <path key={i}
-              d={`M ${from.x + 22} ${from.y} C ${mx} ${from.y}, ${mx} ${to.y}, ${to.x - 20} ${to.y}`}
-              fill="none"
-              stroke="#6366f1"
-              strokeWidth={width}
-              strokeOpacity={alpha}
-              onMouseMove={(ev) => showTooltip(ev, `${e.fromRole} → ${data.repos.find((r) => r.id === e.toRepoId)?.github_repo}: ${e.count} task${e.count !== 1 ? 's' : ''}`)}
-            />
-          )
-        })}
+          {/* ── Role→Role edges ────────────────────────────────────────── */}
+          {data.roleConnections.map((e, i) => {
+            const from = rolePos[e.from_role]
+            const to   = rolePos[e.to_role]
+            if (!from || !to || e.from_role === e.to_role) return null
+            const isDel = e.message_type === 'delegation'
+            const color = isDel ? '#a855f7' : '#22c55e'
+            const curveX = from.x - 55 - (i % 3) * 14
+            return (
+              <path key={`rr-${i}`}
+                d={`M ${from.x - ROLE_R} ${from.y} Q ${curveX} ${(from.y + to.y) / 2}, ${to.x - ROLE_R} ${to.y}`}
+                fill="none" stroke={color} strokeWidth={1.5} strokeOpacity={0.55} strokeDasharray="5 3"
+                style={{ cursor: 'crosshair' }}
+                onMouseMove={(ev) => showTip(ev, `${e.from_role} → ${e.to_role}: ${e.count} ${e.message_type}${e.count !== 1 ? 's' : ''}`)}
+              />
+            )
+          })}
 
-        {/* ── Role → Role edges ─────────────────────────────────── */}
-        {roleRoleEdges.map((e, i) => {
-          const from = rolePos[e.from_role]
-          const to   = rolePos[e.to_role]
-          if (!from || !to || from === to) return null
-          const isDelegation = e.message_type === 'delegation'
-          const color = isDelegation ? '#a855f7' : '#22c55e'
-          const off   = (i % 3) * 20 - 20
-          return (
-            <path key={`rr-${i}`}
-              d={`M ${from.x} ${from.y + 8} Q ${from.x - 60 + off} ${(from.y + to.y) / 2}, ${to.x} ${to.y - 8}`}
-              fill="none"
-              stroke={color}
-              strokeWidth={1.5}
-              strokeOpacity={0.5}
-              strokeDasharray="5 3"
-              onMouseMove={(ev) => showTooltip(ev, `${e.from_role} → ${e.to_role}: ${e.count} ${e.message_type}${e.count !== 1 ? 's' : ''}`)}
-            />
-          )
-        })}
+          {/* ── Role nodes ─────────────────────────────────────────────── */}
+          {ALL_ROLES.map((role) => {
+            const pos    = rolePos[role]
+            const color  = ROLE_COLORS[role]
+            const active = activeRoleIds.has(role)
+            return (
+              <g key={role} opacity={active ? 1 : 0.28} style={{ cursor: 'default' }}
+                onMouseMove={(ev) => showTip(ev, active ? role : `${role} — no tasks yet`)}>
+                <circle cx={pos.x} cy={pos.y} r={ROLE_R + 6} fill={color} fillOpacity={0.07} stroke="none" />
+                <circle cx={pos.x} cy={pos.y} r={ROLE_R} fill={color} fillOpacity={0.13}
+                  stroke={color} strokeWidth={1.5} filter={active ? 'url(#glow-brain)' : undefined} />
+                {active && <circle cx={pos.x} cy={pos.y} r={5} fill={color} />}
+                <text x={pos.x} y={pos.y - ROLE_R - 8} textAnchor="middle"
+                  fill={active ? color : '#4b5563'} fontSize={9} fontWeight={700} fontFamily="ui-monospace, monospace">
+                  {role.replace('RAZ-', '')}
+                </text>
+              </g>
+            )
+          })}
 
-        {/* ── Role nodes ────────────────────────────────────────── */}
-        {ALL_ROLES.map((role) => {
-          const pos     = rolePos[role]
-          const color   = ROLE_COLORS[role]
-          const active  = activeRoles.has(role)
-          const opacity = active ? 1 : 0.3
-          return (
-            <g key={role} opacity={opacity}
-              onMouseMove={(ev) => showTooltip(ev, `${role}${active ? '' : ' — no tasks yet'}`)}
-              style={{ cursor: 'default' }}>
-              <circle cx={pos.x} cy={pos.y} r={20} fill={color} fillOpacity={0.15} stroke={color} strokeWidth={1.5}
-                filter={active ? 'url(#glow)' : undefined} />
-              {active && <circle cx={pos.x} cy={pos.y} r={4} fill={color} />}
-              <text x={pos.x} y={pos.y - 26} textAnchor="middle" fill={active ? color : '#6b7280'}
-                fontSize={8} fontWeight={600} fontFamily="ui-monospace, monospace">
-                {role.replace('RAZ-', '')}
+          {/* ── Active repo cards ──────────────────────────────────────── */}
+          {activeRepos.map((repo) => {
+            const pos   = repoPos[repo.id]
+            const mem   = memMap[repo.id] ?? 0
+            const tasks = taskMap[repo.id]
+            const pct   = tasks && tasks.total > 0 ? tasks.completed / tasks.total : 0
+            const name  = repo.github_repo
+            return (
+              <g key={repo.id} style={{ cursor: 'default' }}
+                onMouseMove={(ev) => showTip(ev, `${name} · ${tasks?.total ?? 0} tasks (${tasks?.completed ?? 0} done) · ${mem} memory entries`)}>
+                <rect x={pos.x - CARD_W / 2} y={pos.y - CARD_H / 2} width={CARD_W} height={CARD_H} rx={7}
+                  fill="#1a2235" stroke="#2d3f5c" strokeWidth={1.2} />
+                {/* Progress bar */}
+                {tasks && tasks.total > 0 && (
+                  <>
+                    <rect x={pos.x - CARD_W / 2 + 6} y={pos.y + CARD_H / 2 - 7} width={CARD_W - 12} height={3} rx={1.5} fill="#0f172a" />
+                    <rect x={pos.x - CARD_W / 2 + 6} y={pos.y + CARD_H / 2 - 7} width={(CARD_W - 12) * pct} height={3} rx={1.5} fill="#6366f1" />
+                  </>
+                )}
+                <text x={pos.x} y={pos.y - 5} textAnchor="middle"
+                  fill="#cbd5e1" fontSize={9.5} fontWeight={700} fontFamily="ui-monospace, monospace">
+                  {name.length > 13 ? name.slice(0, 12) + '…' : name}
+                </text>
+                <text x={pos.x} y={pos.y + 9} textAnchor="middle" fill="#475569" fontSize={7.5} fontFamily="sans-serif">
+                  {tasks ? `${tasks.completed}/${tasks.total} done` : '—'} · {mem} mem
+                </text>
+              </g>
+            )
+          })}
+
+          {/* ── Inactive repos: compact dots ───────────────────────────── */}
+          {inactiveRepos.length > 0 && (
+            <>
+              <text x={REPO_X} y={inactiveStartY - 14} textAnchor="middle"
+                fill="#374151" fontSize={7.5} fontFamily="sans-serif" fontStyle="italic">
+                {inactiveRepos.length} inactive repos
               </text>
+              {inactiveRepos.map((repo) => {
+                const pos = repoPos[repo.id]
+                return (
+                  <g key={repo.id} opacity={0.4} style={{ cursor: 'default' }}
+                    onMouseMove={(ev) => showTip(ev, `${repo.github_repo} — no tasks yet`)}>
+                    <rect x={pos.x - 52} y={pos.y - 9} width={104} height={18} rx={4}
+                      fill="#111827" stroke="#1f2937" strokeWidth={1} />
+                    <text x={pos.x} y={pos.y + 4} textAnchor="middle"
+                      fill="#4b5563" fontSize={8} fontFamily="ui-monospace, monospace">
+                      {repo.github_repo.length > 16 ? repo.github_repo.slice(0, 15) + '…' : repo.github_repo}
+                    </text>
+                  </g>
+                )
+              })}
+            </>
+          )}
+
+          {/* ── Legend ─────────────────────────────────────────────────── */}
+          <g transform={`translate(${W - 8}, 12)`}>
+            {ALL_ROLES.map((r, i) => (
+              <g key={r} transform={`translate(0, ${i * 16})`}>
+                <circle cx={-86} cy={6} r={4} fill={ROLE_COLORS[r]} />
+                <text x={-79} y={10} fill="#6b7280" fontSize={8} fontFamily="sans-serif">{r}</text>
+              </g>
+            ))}
+            <g transform={`translate(0, ${ALL_ROLES.length * 16 + 6})`}>
+              <line x1={-90} y1={6} x2={-76} y2={6} stroke="#6366f1" strokeWidth={2} strokeOpacity={0.6} />
+              <text x={-73} y={10} fill="#6b7280" fontSize={8} fontFamily="sans-serif">task link</text>
             </g>
-          )
-        })}
-
-        {/* ── Repo nodes ────────────────────────────────────────── */}
-        {data.repos.map((repo) => {
-          const pos     = repoPos[repo.id]
-          const active  = activeRepos.has(repo.id)
-          const mem     = memMap[repo.id] ?? 0
-          const tasks   = taskMap[repo.id]
-          const opacity = active ? 1 : 0.35
-          return (
-            <g key={repo.id} opacity={opacity}
-              onMouseMove={(ev) => showTooltip(ev, `${repo.github_repo} · ${tasks?.total ?? 0} tasks · ${mem} memory entries`)}
-              style={{ cursor: 'default' }}>
-              <rect x={pos.x - 38} y={pos.y - 16} width={76} height={32} rx={6}
-                fill={active ? '#1e293b' : '#111827'} stroke={active ? '#334155' : '#1f2937'} strokeWidth={1} />
-              <text x={pos.x} y={pos.y - 3} textAnchor="middle" fill={active ? '#e2e8f0' : '#4b5563'}
-                fontSize={8.5} fontWeight={600} fontFamily="ui-monospace, monospace">
-                {repo.github_repo.slice(0, 12)}
-              </text>
-              <text x={pos.x} y={pos.y + 9} textAnchor="middle" fill={active ? '#64748b' : '#374151'} fontSize={7} fontFamily="sans-serif">
-                {tasks ? `${tasks.completed}/${tasks.total} done` : 'no tasks'} · {mem}mem
-              </text>
+            <g transform={`translate(0, ${ALL_ROLES.length * 16 + 22})`}>
+              <line x1={-90} y1={6} x2={-76} y2={6} stroke="#a855f7" strokeWidth={1.5} strokeDasharray="4 2" strokeOpacity={0.7} />
+              <text x={-73} y={10} fill="#6b7280" fontSize={8} fontFamily="sans-serif">delegation</text>
             </g>
-          )
-        })}
-
-        {/* Center label */}
-        <text x={W / 2} y={H - 10} textAnchor="middle" fill="#1f2937" fontSize={9} fontFamily="sans-serif">
-          {roleRepoEdges.length} active connections · {data.repos.length} repos · {ALL_ROLES.filter((r) => !activeRoles.has(r)).length} unused roles
-        </text>
-      </svg>
+            <g transform={`translate(0, ${ALL_ROLES.length * 16 + 38})`}>
+              <line x1={-90} y1={6} x2={-76} y2={6} stroke="#22c55e" strokeWidth={1.5} strokeDasharray="4 2" strokeOpacity={0.7} />
+              <text x={-73} y={10} fill="#6b7280" fontSize={8} fontFamily="sans-serif">handoff</text>
+            </g>
+          </g>
+        </svg>
+      </div>
 
       {/* Tooltip */}
       {tooltip && (
-        <div className="absolute pointer-events-none bg-gray-800 text-gray-100 text-[9px] px-2 py-1 rounded shadow-lg border border-gray-700 z-20 whitespace-nowrap"
-          style={{ left: tooltip.x, top: tooltip.y }}>
+        <div className="absolute pointer-events-none bg-gray-800/95 text-gray-100 text-[9px] px-2 py-1 rounded shadow-xl border border-gray-600/60 z-20 whitespace-nowrap"
+          style={{ left: Math.min(tooltip.x, 500), top: Math.max(0, tooltip.y) }}>
           {tooltip.text}
         </div>
       )}
