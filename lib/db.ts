@@ -313,6 +313,10 @@ export function saveSessionId(taskId: string, sessionId: string): void {
   db.prepare(`UPDATE tasks SET session_id = ? WHERE id = ?`).run(sessionId, taskId)
 }
 
+export function clearSessionId(taskId: string): void {
+  db.prepare(`UPDATE tasks SET session_id = NULL WHERE id = ?`).run(taskId)
+}
+
 export function getSessionId(taskId: string): string | null {
   const row = db.prepare(`SELECT session_id FROM tasks WHERE id = ?`).get(taskId) as { session_id: string | null } | undefined
   return row?.session_id ?? null

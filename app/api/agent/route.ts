@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { runAgent } from '@/lib/agent'
 import { pushBranchAndOpenPR } from '@/lib/github'
-import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog } from '@/lib/db'
+import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId } from '@/lib/db'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from '@/lib/roles'
 
 export const runtime    = 'nodejs'
@@ -34,9 +34,14 @@ export async function POST(req: NextRequest) {
     if (!existing) {
       return new Response(JSON.stringify({ error: 'Task not found for resume.' }), { status: 404 })
     }
-    taskId             = resumeTaskId
-    branch             = existing.branch
-    checkpointMessages = getTaskMessages(resumeTaskId)
+    taskId = resumeTaskId
+    branch = existing.branch
+    // Only carry checkpoint messages for interrupted tasks — completed tasks restart clean
+    if (existing.status !== 'complete') {
+      checkpointMessages = getTaskMessages(resumeTaskId)
+    } else {
+      clearSessionId(resumeTaskId)
+    }
     resetTaskToRunning(taskId)
   } else {
     taskId = randomUUID()
