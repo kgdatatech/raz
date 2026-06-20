@@ -1,8 +1,9 @@
 'use client'
 
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { ROLES, ROLE_IDS, type RoleId, DEFAULT_ROLE } from '@/lib/roles'
 import BrainView from './components/BrainView'
+import { detectIntent, type DispatchResult } from '@/lib/dispatch'
 
 interface RepoRow {
   id:             number
@@ -124,6 +125,14 @@ const WORKFLOWS = [
   { value: 'test',     label: 'Test'     },
   { value: 'strategy', label: 'Strategy' },
 ]
+
+const ROLE_COLORS_CSS: Record<string, string> = {
+  'RAZ-Dev':  '#6366f1',
+  'RAZ-Sec':  '#ef4444',
+  'RAZ-QA':   '#22c55e',
+  'RAZ-Ops':  '#a855f7',
+  'RAZ-Data': '#f59e0b',
+}
 
 const ROLE_DEFAULT_WORKFLOW: Record<RoleId, string> = {
   'RAZ-Dev':  'feature',
@@ -388,6 +397,9 @@ export default function RazDashboard() {
   const [pendingQuestionId,  setPendingQuestionId]  = useState<string | null>(null)
   const [razMode,            setRazMode]            = useState<'standard' | 'supervised' | 'autonomous'>('standard')
   const [isPaused,           setIsPaused]           = useState(false)
+  const [dispatch,           setDispatch]           = useState<DispatchResult | null>(null)
+  const [dispatchCountdown,  setDispatchCountdown]  = useState<number | null>(null)
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const logRef         = useRef<HTMLDivElement>(null)
   const abortRef       = useRef<AbortController | null>(null)
@@ -578,6 +590,8 @@ export default function RazDashboard() {
     setPlanOpen(false)
     setLiveCost(0)
     setFinalCost(null)
+    setDispatch(null)
+    cancelCountdown()
 
     try {
       const res = await fetch('/api/agent', {
@@ -655,7 +669,10 @@ export default function RazDashboard() {
 
   function handleRun() {
     if (!selectedRepo || !task.trim()) return
-    runTask({ description: task, role, workflow, issueNumber: selectedIssue?.number })
+    cancelCountdown()
+    const effectiveRole     = dispatch?.role     ?? role
+    const effectiveWorkflow = dispatch?.workflow ?? workflow
+    runTask({ description: task, role: effectiveRole, workflow: effectiveWorkflow, issueNumber: selectedIssue?.number })
   }
 
   function addToQueue() {
@@ -677,6 +694,38 @@ export default function RazDashboard() {
 
   function dismissHandoff(taskId: string) {
     setHandoffSuggestions((prev) => prev.filter((h) => h.taskId !== taskId))
+  }
+
+  const cancelCountdown = useCallback(() => {
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
+    setDispatchCountdown(null)
+  }, [])
+
+  function handleTaskInput(value: string) {
+    setTask(value)
+    cancelCountdown()
+    if (!value.trim() || value.trim().length < 8) { setDispatch(null); return }
+    const result = detectIntent(value)
+    setDispatch(result)
+    // In supervised/autonomous mode, start countdown to auto-run
+    if ((razMode === 'supervised' || razMode === 'autonomous') && !running && selectedRepo && (selectedRepo.local_path || localPath.trim())) {
+      setRole(result.role)
+      setWorkflow(result.workflow)
+      let secs = 4
+      setDispatchCountdown(secs)
+      countdownRef.current = setInterval(() => {
+        secs -= 1
+        if (secs <= 0) {
+          cancelCountdown()
+          runTask({ description: value, role: result.role, workflow: result.workflow })
+        } else {
+          setDispatchCountdown(secs)
+        }
+      }, 1000)
+    } else if (razMode === 'standard') {
+      setRole(result.role)
+      setWorkflow(result.workflow)
+    }
   }
 
   async function changeMode(mode: 'standard' | 'supervised' | 'autonomous') {
@@ -946,18 +995,58 @@ export default function RazDashboard() {
 
             {/* Task */}
             <div>
-              <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Task</label>
-              <textarea value={task} onChange={(e) => setTask(e.target.value)} rows={5}
-                placeholder={`What should ${role} do? Be specific — file names, expected behavior, acceptance criteria.`}
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">
+                  {razMode === 'standard' ? 'Task' : 'Tell RAZ what you need'}
+                </label>
+                {dispatch && task.trim().length >= 8 && (
+                  <span className={`text-[8px] font-semibold px-1.5 py-0.5 rounded-full border transition-all ${dispatch.confidence === 'high' ? 'text-green-700 bg-green-50 border-green-200' : dispatch.confidence === 'medium' ? 'text-blue-700 bg-blue-50 border-blue-200' : 'text-gray-500 bg-gray-50 border-gray-200'}`}>
+                    {dispatch.confidence === 'high' ? '●' : dispatch.confidence === 'medium' ? '◐' : '○'} {dispatch.confidence}
+                  </span>
+                )}
+              </div>
+              <textarea value={task} onChange={(e) => handleTaskInput(e.target.value)} rows={5}
+                placeholder={razMode === 'standard'
+                  ? `Describe the task for ${role}...`
+                  : 'Describe what you need — RAZ will pick the right agent and workflow automatically...'}
                 className="w-full bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2 text-xs text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 resize-none leading-relaxed" />
+
+              {/* Dispatch inference chip */}
+              {dispatch && task.trim().length >= 8 && (
+                <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 bg-gray-900/5 border border-gray-200 rounded-md px-2 py-1">
+                    <span className="text-[8px] text-gray-400">→</span>
+                    <span className="text-[9px] font-semibold" style={{ color: ROLE_COLORS_CSS[dispatch.role] ?? '#6366f1' }}>{dispatch.role}</span>
+                    <span className="text-[8px] text-gray-300">·</span>
+                    <span className="text-[9px] text-gray-500">{dispatch.workflow}</span>
+                  </div>
+                  <span className="text-[8px] text-gray-400 italic">{dispatch.reason}</span>
+                  {dispatch.role !== role && (
+                    <button onClick={() => { setDispatch(null); cancelCountdown() }}
+                      className="text-[8px] text-gray-400 hover:text-gray-600 underline">override</button>
+                  )}
+                </div>
+              )}
+
+              {/* Countdown for Supervised / Autonomous */}
+              {dispatchCountdown !== null && (
+                <div className="mt-1.5 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5">
+                  <span className="text-[9px] text-amber-700 font-medium">
+                    Running in {dispatchCountdown}s — {dispatch?.role} ({dispatch?.workflow})
+                  </span>
+                  <button onClick={cancelCountdown} className="text-[8px] font-semibold text-amber-600 hover:text-amber-800 border border-amber-300 rounded px-1.5 py-0.5 hover:bg-amber-100 transition-colors">
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Run / Queue / Stop */}
             <div className="flex gap-1.5">
-              <button onClick={handleRun} disabled={!canRun} className="flex-1 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-white" style={{ background: canRun && !running ? activeRole.color : '#111827' }}>
+              <button onClick={handleRun} disabled={!canRun} className="flex-1 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-white" style={{ background: canRun && !running ? (dispatch ? ROLE_COLORS_CSS[dispatch.role] ?? activeRole.color : activeRole.color) : '#111827' }}>
                 {running ? (
                   <span className="flex items-center justify-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />{role} working...</span>
-                ) : `Run ${role}`}
+                ) : dispatch ? `Run ${dispatch.role}` : `Run ${role}`}
               </button>
               {!running && <button onClick={addToQueue} disabled={!canQueue} title="Add to queue" className="px-2.5 py-2 bg-white border border-gray-200 text-gray-500 text-[10px] font-medium rounded-md hover:border-gray-400 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">+Q</button>}
               {running && !isPaused && <button onClick={handlePause} className="px-2.5 py-2 bg-amber-500 text-white text-[10px] font-semibold rounded-md hover:bg-amber-600 transition-colors">Pause</button>}
