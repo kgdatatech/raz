@@ -279,7 +279,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       validate_migration: 'Bash',
     }
     const razMcpTools = [
-      'mcp__raz__get_memory',
+      'mcp__raz__get_memory', 'mcp__raz__get_role_context',
       'mcp__raz__ask_user',
       'mcp__raz__create_plan', 'mcp__raz__save_memory', 'mcp__raz__task_complete',
       'mcp__raz__security_scan', 'mcp__raz__generate_report',
@@ -300,6 +300,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       ...(github?.owner ? { RAZ_GITHUB_OWNER: github.owner }    : {}),
       ...(github?.repo  ? { RAZ_GITHUB_REPO:  github.repo }     : {}),
       ...(role          ? { RAZ_PARENT_ROLE:   role }            : {}),
+      ...(role          ? { RAZ_ROLE:          role }            : {}),
     }
 
     mcpConfigPath = writeMcpConfig(worktreePath!, mcpEnv)

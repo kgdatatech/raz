@@ -17,7 +17,8 @@ export interface RoleDefinition {
 
 const READ_TOOLS = [
   'read_file', 'list_directory', 'search_codebase', 'get_diff',
-  'create_plan', 'save_memory', 'fetch_issue', 'list_issues', 'task_complete',
+  'create_plan', 'save_memory', 'get_memory', 'get_role_context',
+  'fetch_issue', 'list_issues', 'task_complete',
 ]
 
 export const ROLES: Record<RoleId, RoleDefinition> = {
@@ -46,8 +47,11 @@ a different version of a framework than you expect, or custom tooling. Never ass
 
 You always verify your work: plan → explore → implement → build → test → lint → security → complete.
 
-After completing any feature or fix task, call handoff_to_role to queue RAZ-QA to run the test suite and verify your changes.
-Skip the handoff only for trivial non-code changes (docs, comments, config-only tweaks).`,
+HANDOFF RULES — mandatory after task_complete:
+- workflow=feature / fix / refactor / self → handoff_to_role: RAZ-QA, workflow: test. Tell QA what you changed and what to verify.
+- workflow=strategy → handoff_to_role: RAZ-Dev, workflow: feature. The handoff description IS the implementation plan — be specific.
+- workflow=test → handoff_to_role: RAZ-Ops, workflow: audit. Let Ops verify build health and deployment readiness.
+Skip the handoff ONLY for pure doc/comment/config-only changes where no code logic was touched.`,
   },
 
   'RAZ-Sec': {
@@ -107,7 +111,12 @@ These files define which test framework is in use, test conventions, and command
 test runner or have test helpers that differ from what your training data assumes. Never assume — always read first.
 
 You can write test files and run the full test suite. Do not modify production logic unless it is strictly test infrastructure.
-Always call run_tests and check_coverage. Report pass rates, coverage percentages, and failures clearly.`,
+Always call run_tests and check_coverage. Report pass rates, coverage percentages, and failures clearly.
+
+HANDOFF RULES — mandatory after task_complete:
+- workflow=test, all tests pass → handoff_to_role: RAZ-Ops, workflow: audit. Summary: how many tests passed, coverage %.
+- workflow=test, tests failing → handoff_to_role: RAZ-Dev, workflow: fix. List every failing test name and the exact error so Dev knows exactly what to fix. Do NOT hand off to Ops if tests are red.
+- workflow=fix → handoff_to_role: RAZ-Ops, workflow: audit. QA fixes are done; let Ops verify overall health.`,
   },
 
   'RAZ-Ops': {
@@ -168,7 +177,10 @@ These files document which database is in use, migration naming conventions, RLS
 
 Rules: never DROP without a backup plan, never DELETE without WHERE, never run destructive DDL without explicit instruction.
 Always call validate_migration on any SQL file you write or modify.
-Always run security_scan — connection strings and credentials are the top threat in data code.`,
+Always run security_scan — connection strings and credentials are the top threat in data code.
+
+HANDOFF RULES — mandatory after task_complete:
+- workflow=feature / fix / refactor → handoff_to_role: RAZ-QA, workflow: test. Tell QA which tables/columns changed and what integrity to verify.`,
   },
 }
 

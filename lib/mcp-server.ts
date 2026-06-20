@@ -112,6 +112,35 @@ server.tool(
   },
 )
 
+// ── get_role_context ──────────────────────────────────────────────────────────
+server.tool(
+  'get_role_context',
+  'Returns your own role definition: what tools you can use, which workflows you can run, your handoff rules, and your commit prefix. Call this if you are unsure about your own capabilities or constraints.',
+  {},
+  async () => {
+    await checkPauseOrAbort()
+    const roleId = process.env.RAZ_ROLE ?? 'RAZ-Dev'
+    const { ROLES } = await import('./roles')
+    const role = ROLES[roleId as keyof typeof ROLES]
+    if (!role) return { content: [{ type: 'text' as const, text: `Unknown role: ${roleId}` }] }
+
+    const text = [
+      `ROLE: ${role.id}`,
+      `DESCRIPTION: ${role.description}`,
+      `COMMIT PREFIX: ${role.commitPrefix}`,
+      `ALLOWED TOOLS: ${role.allowedTools.join(', ')}`,
+      `REQUIRED GATES (must call before task_complete): ${role.extraGates.length > 0 ? role.extraGates.join(', ') : 'none'}`,
+      `BUILD REQUIRED: ${role.buildRequired}`,
+      `SECURITY SCAN REQUIRED: ${role.securityRequired}`,
+      ``,
+      `SYSTEM INSTRUCTIONS:`,
+      role.systemContext,
+    ].join('\n')
+
+    return { content: [{ type: 'text' as const, text }] }
+  },
+)
+
 // ── task_complete ─────────────────────────────────────────────────────────────
 server.tool(
   'task_complete',

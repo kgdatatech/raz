@@ -32,7 +32,7 @@ const ROLE_R     = 22   // role node radius
 const CARD_W     = 110
 const CARD_H     = 38
 
-export default function BrainView() {
+export default function BrainView({ onExpand, expandLabel }: { onExpand?: () => void; expandLabel?: string } = {}) {
   const [data,    setData]    = useState<BrainData | null>(null)
   const [loading, setLoading] = useState(true)
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null)
@@ -130,9 +130,16 @@ export default function BrainView() {
             {roleRepoEdges.length} connections · {activeRepos.length} active repos · {inactiveRepos.length} inactive
           </span>
         </div>
-        <button onClick={refresh} className="text-[8px] text-gray-600 hover:text-gray-300 transition-colors px-1.5 py-0.5 rounded hover:bg-gray-800">
-          ↻ Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={refresh} className="text-[8px] text-gray-600 hover:text-gray-300 transition-colors px-1.5 py-0.5 rounded hover:bg-gray-800">
+            ↻ Refresh
+          </button>
+          {onExpand && (
+            <button onClick={onExpand} className="text-[8px] text-gray-600 hover:text-gray-300 transition-colors px-1.5 py-0.5 rounded hover:bg-gray-800">
+              {expandLabel ?? '⛶'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── SVG scroll area ──────────────────────────────────────────────── */}

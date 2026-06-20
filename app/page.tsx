@@ -387,6 +387,7 @@ export default function RazDashboard() {
   const [taskLogLoading,  setTaskLogLoading]  = useState(false)
   const [planOpen,        setPlanOpen]        = useState(false)
   const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues' | 'reports' | 'brain'>('history')
+  const [brainFullscreen, setBrainFullscreen] = useState(false)
   const [memory,          setMemory]          = useState<MemoryRow[]>([])
   const [messages,        setMessages]        = useState<AgentMessageRow[]>([])
   const [allIssues,       setAllIssues]       = useState<IssueRow[]>([])
@@ -1539,7 +1540,26 @@ export default function RazDashboard() {
             {/* Brain tab */}
             {bottomTab === 'brain' && (
               <div className="flex-1 overflow-hidden p-2">
-                <BrainView />
+                <BrainView onExpand={() => setBrainFullscreen(true)} />
+              </div>
+            )}
+
+            {/* Brain fullscreen overlay */}
+            {brainFullscreen && (
+              <div className="fixed inset-0 z-50 bg-gray-950 flex flex-col">
+                <div className="flex-shrink-0 flex items-center justify-between px-4 py-2 border-b border-gray-800">
+                  <span className="text-[9px] font-semibold text-violet-400 uppercase tracking-widest">⬡ Brain Map</span>
+                  <button
+                    onClick={() => setBrainFullscreen(false)}
+                    className="text-gray-400 hover:text-white transition-colors text-base leading-none px-2 py-1 rounded hover:bg-gray-800"
+                    title="Close"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="flex-1 overflow-hidden p-3">
+                  <BrainView onExpand={() => setBrainFullscreen(false)} expandLabel="✕ Exit" />
+                </div>
               </div>
             )}
           </div>
