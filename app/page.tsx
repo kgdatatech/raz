@@ -953,7 +953,7 @@ export default function RazDashboard() {
                               <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse ml-auto" />
                             </div>
                             <div className="px-3 py-2.5">
-                              <p className="text-[11px] text-gray-800 font-medium mb-2.5 leading-snug">{question}</p>
+                              <p className="text-[11px] text-gray-800 font-medium mb-2.5 leading-snug">{inlineRender(question)}</p>
                               {options && options.length > 0 ? (
                                 <div className="flex flex-col gap-1.5">
                                   {options.map((opt) => (
