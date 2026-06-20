@@ -33,6 +33,23 @@ interface PrStatusRow {
   checked_at:      string
 }
 
+interface PRDetails {
+  number:         number
+  title:          string
+  body:           string | null
+  state:          string
+  merged:         boolean
+  mergeableState: string | null
+  headBranch:     string
+  baseBranch:     string
+  author:         string
+  createdAt:      string
+  files:          { filename: string; additions: number; deletions: number; status: string }[]
+  comments:       { author: string; body: string; createdAt: string }[]
+  ciStatus:       string
+  approvals:      number
+}
+
 interface TaskRow {
   id:             string
   description:    string
@@ -357,6 +374,9 @@ export default function RazDashboard() {
   const [allIssues,       setAllIssues]       = useState<IssueRow[]>([])
   const [issueFilter,     setIssueFilter]     = useState<'open' | 'closed'>('open')
   const [prStatus,        setPrStatus]        = useState<PrStatusRow | null>(null)
+  const [prDetails,       setPrDetails]       = useState<PRDetails | null>(null)
+  const [prDetailsLoading, setPrDetailsLoading] = useState(false)
+  const [prActionLoading, setPrActionLoading] = useState<string | null>(null)
   const [reports,         setReports]         = useState<{ file: string; size: number; mtime: string }[]>([])
   const [openReport,      setOpenReport]      = useState<{ file: string; content: string } | null>(null)
   const [queue,           setQueue]           = useState<QueueItem[]>([])
@@ -391,6 +411,7 @@ export default function RazDashboard() {
     setMemory([])
     setMessages([])
     setPrStatus(null)
+    setPrDetails(null)
     loadTasks(selectedRepo.id)
     loadMemory(selectedRepo.id)
     loadMessages(selectedRepo.id)
@@ -431,6 +452,36 @@ export default function RazDashboard() {
   async function loadPrStatus(taskId: string) {
     const data = await fetch(`/api/pr-status?taskId=${taskId}`).then((r) => r.json()).catch(() => null)
     setPrStatus(data)
+  }
+
+  function parsePRUrl(url: string): { owner: string; repo: string; prNumber: number } | null {
+    const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/)
+    if (!m) return null
+    return { owner: m[1], repo: m[2], prNumber: Number(m[3]) }
+  }
+
+  async function loadPRDetails(prUrl: string) {
+    const parsed = parsePRUrl(prUrl)
+    if (!parsed) return
+    setPrDetailsLoading(true)
+    setPrDetails(null)
+    const data = await fetch(`/api/pr/details?owner=${parsed.owner}&repo=${parsed.repo}&prNumber=${parsed.prNumber}`)
+      .then((r) => r.json()).catch(() => null)
+    setPrDetails(data?.error ? null : data)
+    setPrDetailsLoading(false)
+  }
+
+  async function handlePRAction(action: 'merge' | 'close' | 'reopen', prUrl: string) {
+    const parsed = parsePRUrl(prUrl)
+    if (!parsed) return
+    setPrActionLoading(action)
+    await fetch('/api/pr/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...parsed }),
+    }).catch(() => {})
+    setPrActionLoading(null)
+    await loadPRDetails(prUrl)
   }
 
   function loadReports() {
@@ -1045,7 +1096,7 @@ export default function RazDashboard() {
                       const isChild = !!t.parent_task_id
                       return (
                         <div key={t.id} className="flex items-center group hover:bg-gray-50 transition-colors">
-                          <button onClick={() => { setSelectedTask(t); setPrStatus(null); if (t.pr_url) loadPrStatus(t.id) }} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
+                          <button onClick={() => { setSelectedTask(t); setPrStatus(null); setPrDetails(null); if (t.pr_url) { loadPrStatus(t.id); loadPRDetails(t.pr_url) } }} className="flex-1 flex items-center gap-3 px-4 py-2.5 text-left min-w-0">
                             {isChild && <span className="text-[8px] text-violet-400 flex-shrink-0">↳</span>}
                             <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${STATUS_DOT[t.status] ?? 'bg-gray-300'}`} />
                             <div className="flex-1 min-w-0">
@@ -1291,31 +1342,130 @@ export default function RazDashboard() {
                 </div>
 
                 {selectedTask.pr_url && (
-                  <div>
-                    <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Pull Request</div>
-                    <a href={selectedTask.pr_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 underline underline-offset-2 break-all">{selectedTask.pr_url}</a>
-                    {prStatus && (
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {prStatus.state && (
-                          <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${prStatus.state === 'open' ? 'text-green-700 bg-green-50 border-green-200' : prStatus.state === 'merged' ? 'text-violet-700 bg-violet-50 border-violet-200' : 'text-gray-500 bg-gray-50 border-gray-200'}`}>
-                            {prStatus.state}
-                          </span>
+                  <div className="border border-gray-200 rounded-xl overflow-hidden">
+                    {/* PR header */}
+                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1">Pull Request</div>
+                        {prDetails ? (
+                          <div className="text-[11px] font-semibold text-gray-800 leading-snug">{prDetails.title}</div>
+                        ) : (
+                          <a href={selectedTask.pr_url} target="_blank" rel="noreferrer" className="text-[10px] text-blue-600 underline break-all">{selectedTask.pr_url}</a>
                         )}
-                        {prStatus.ci_status && (
-                          <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${prStatus.ci_status === 'success' ? 'text-green-700 bg-green-50 border-green-200' : prStatus.ci_status === 'failure' ? 'text-red-700 bg-red-50 border-red-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
-                            CI: {prStatus.ci_status}
-                          </span>
+                        {prDetails && (
+                          <div className="mt-1 text-[9px] text-gray-400">
+                            by <span className="text-gray-600 font-medium">{prDetails.author}</span>
+                            {' · '}<span className="font-mono">{prDetails.headBranch}</span> → <span className="font-mono">{prDetails.baseBranch}</span>
+                            {' · '}<a href={selectedTask.pr_url} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">#{prDetails.number}</a>
+                          </div>
                         )}
-                        {prStatus.review_decision && (
-                          <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full border ${prStatus.review_decision === 'APPROVED' ? 'text-green-700 bg-green-50 border-green-200' : prStatus.review_decision === 'CHANGES_REQUESTED' ? 'text-red-700 bg-red-50 border-red-200' : 'text-gray-500 bg-gray-50 border-gray-200'}`}>
-                            {prStatus.review_decision}
-                          </span>
-                        )}
-                        {prStatus.merged === 1 && (
-                          <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full border text-violet-700 bg-violet-50 border-violet-200">merged</span>
-                        )}
-                        <span className="text-[8px] text-gray-400 self-center">checked {new Date(prStatus.checked_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                       </div>
+                      {/* Status badges */}
+                      <div className="flex flex-wrap gap-1.5 flex-shrink-0">
+                        {prDetails ? (
+                          <>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${prDetails.merged ? 'text-violet-700 bg-violet-50 border-violet-200' : prDetails.state === 'open' ? 'text-green-700 bg-green-50 border-green-200' : 'text-gray-500 bg-gray-100 border-gray-200'}`}>
+                              {prDetails.merged ? 'merged' : prDetails.state}
+                            </span>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${prDetails.ciStatus === 'passing' ? 'text-green-700 bg-green-50 border-green-200' : prDetails.ciStatus === 'failing' ? 'text-red-700 bg-red-50 border-red-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+                              CI: {prDetails.ciStatus}
+                            </span>
+                            {prDetails.approvals > 0 && (
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full border text-green-700 bg-green-50 border-green-200">
+                                {prDetails.approvals} approval{prDetails.approvals > 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </>
+                        ) : prDetailsLoading ? (
+                          <span className="text-[9px] text-gray-400 animate-pulse">loading...</span>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {/* PR body */}
+                    {prDetails?.body && (
+                      <div className="px-4 py-3 border-b border-gray-100">
+                        <div className="text-[10px] text-gray-600 leading-relaxed whitespace-pre-wrap line-clamp-4">{prDetails.body}</div>
+                      </div>
+                    )}
+
+                    {/* Action buttons */}
+                    {prDetails && !prDetails.merged && (
+                      <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-2">
+                        {prDetails.state === 'open' && (
+                          <>
+                            <button
+                              onClick={() => handlePRAction('merge', selectedTask.pr_url!)}
+                              disabled={!!prActionLoading}
+                              className="px-3 py-1.5 text-[10px] font-semibold rounded-md bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors"
+                            >
+                              {prActionLoading === 'merge' ? 'Merging...' : 'Squash & Merge'}
+                            </button>
+                            <button
+                              onClick={() => handlePRAction('close', selectedTask.pr_url!)}
+                              disabled={!!prActionLoading}
+                              className="px-3 py-1.5 text-[10px] font-semibold rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                            >
+                              {prActionLoading === 'close' ? 'Closing...' : 'Close PR'}
+                            </button>
+                          </>
+                        )}
+                        {prDetails.state === 'closed' && (
+                          <button
+                            onClick={() => handlePRAction('reopen', selectedTask.pr_url!)}
+                            disabled={!!prActionLoading}
+                            className="px-3 py-1.5 text-[10px] font-semibold rounded-md border border-green-200 text-green-700 hover:bg-green-50 disabled:opacity-50 transition-colors"
+                          >
+                            {prActionLoading === 'reopen' ? 'Reopening...' : 'Reopen PR'}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => loadPRDetails(selectedTask.pr_url!)}
+                          disabled={prDetailsLoading}
+                          className="ml-auto px-2.5 py-1.5 text-[9px] font-semibold rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                        >
+                          {prDetailsLoading ? '...' : 'Refresh'}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Files changed */}
+                    {prDetails && prDetails.files.length > 0 && (
+                      <div className="px-4 py-3 border-b border-gray-100">
+                        <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Files Changed ({prDetails.files.length})</div>
+                        <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                          {prDetails.files.map((f, i) => (
+                            <div key={i} className="flex items-center gap-2 text-[10px]">
+                              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${f.status === 'added' ? 'bg-green-400' : f.status === 'removed' ? 'bg-red-400' : 'bg-amber-400'}`} />
+                              <span className="font-mono text-gray-600 flex-1 truncate">{f.filename}</span>
+                              <span className="text-green-600 font-semibold flex-shrink-0">+{f.additions}</span>
+                              <span className="text-red-500 font-semibold flex-shrink-0">-{f.deletions}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Comments */}
+                    {prDetails && prDetails.comments.length > 0 && (
+                      <div className="px-4 py-3">
+                        <div className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Comments ({prDetails.comments.length})</div>
+                        <div className="space-y-2 max-h-48 overflow-y-auto">
+                          {prDetails.comments.map((c, i) => (
+                            <div key={i} className="bg-gray-50 rounded-lg p-2.5 border border-gray-100">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <span className="text-[9px] font-semibold text-gray-700">{c.author}</span>
+                                <span className="text-[8px] text-gray-400">{new Date(c.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                              </div>
+                              <p className="text-[10px] text-gray-600 leading-relaxed whitespace-pre-wrap">{c.body}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {prDetailsLoading && !prDetails && (
+                      <div className="px-4 py-4 text-center text-[10px] text-gray-400 animate-pulse">Loading PR details from GitHub...</div>
                     )}
                   </div>
                 )}

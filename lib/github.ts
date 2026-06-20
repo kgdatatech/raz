@@ -106,3 +106,68 @@ export async function getPRStatus(owner: string, repo: string, prNumber: number)
 export async function addPRComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
   await octokit.issues.createComment({ owner, repo, issue_number: prNumber, body })
 }
+
+// ─── PR Management ────────────────────────────────────────────────────────────
+
+export interface PRDetails {
+  number:         number
+  title:          string
+  body:           string | null
+  state:          string
+  merged:         boolean
+  mergeableState: string | null
+  headBranch:     string
+  baseBranch:     string
+  author:         string
+  createdAt:      string
+  files:          { filename: string; additions: number; deletions: number; status: string }[]
+  comments:       { author: string; body: string; createdAt: string }[]
+  ciStatus:       string
+  approvals:      number
+}
+
+export async function getPRDetails(owner: string, repo: string, prNumber: number): Promise<PRDetails> {
+  const [prRes, filesRes, commentsRes, checksRes, reviewsRes] = await Promise.all([
+    octokit.pulls.get({ owner, repo, pull_number: prNumber }),
+    octokit.pulls.listFiles({ owner, repo, pull_number: prNumber, per_page: 50 }),
+    octokit.issues.listComments({ owner, repo, issue_number: prNumber, per_page: 30 }),
+    octokit.checks.listForRef({ owner, repo, ref: `refs/pull/${prNumber}/head` }).catch(() => ({ data: { check_runs: [] } })),
+    octokit.pulls.listReviews({ owner, repo, pull_number: prNumber }),
+  ])
+  const pr     = prRes.data
+  const checks = checksRes.data.check_runs
+  const ciOk   = checks.every((c) => c.conclusion === 'success' || c.conclusion === 'skipped')
+  const ciStatus = checks.length === 0 ? 'no_checks' : ciOk ? 'passing' : 'failing'
+  const latestReviews = new Map<string, string>()
+  for (const r of reviewsRes.data) { if (r.user?.login) latestReviews.set(r.user.login, r.state) }
+  const approvals = [...latestReviews.values()].filter((s) => s === 'APPROVED').length
+
+  return {
+    number:         pr.number,
+    title:          pr.title,
+    body:           pr.body ?? null,
+    state:          pr.state,
+    merged:         pr.merged ?? false,
+    mergeableState: (pr as Record<string, unknown>).mergeable_state as string ?? null,
+    headBranch:     pr.head.ref,
+    baseBranch:     pr.base.ref,
+    author:         pr.user?.login ?? 'unknown',
+    createdAt:      pr.created_at,
+    files:          filesRes.data.map((f) => ({ filename: f.filename, additions: f.additions, deletions: f.deletions, status: f.status })),
+    comments:       commentsRes.data.map((c) => ({ author: c.user?.login ?? 'unknown', body: c.body ?? '', createdAt: c.created_at })),
+    ciStatus,
+    approvals,
+  }
+}
+
+export async function mergePR(owner: string, repo: string, prNumber: number, method: 'merge' | 'squash' | 'rebase' = 'squash'): Promise<void> {
+  await octokit.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: method })
+}
+
+export async function closePR(owner: string, repo: string, prNumber: number): Promise<void> {
+  await octokit.pulls.update({ owner, repo, pull_number: prNumber, state: 'closed' })
+}
+
+export async function reopenPR(owner: string, repo: string, prNumber: number): Promise<void> {
+  await octokit.pulls.update({ owner, repo, pull_number: prNumber, state: 'open' })
+}
