@@ -1558,7 +1558,7 @@ export default function RazDashboard() {
                   </button>
                 </div>
                 <div className="flex-1 overflow-hidden p-3">
-                  <BrainView onExpand={() => setBrainFullscreen(false)} expandLabel="✕ Exit" />
+                  <BrainView fullscreen onExpand={() => setBrainFullscreen(false)} expandLabel="✕ Exit" />
                 </div>
               </div>
             )}
