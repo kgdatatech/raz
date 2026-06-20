@@ -3,3 +3,195 @@
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
+
+---
+
+# Raziel (RAZ) — Agent Reference
+
+Raziel is an Archon Systems internal multi-agent coding framework. It runs locally. Agents operate in isolated git worktrees, communicate through SQLite and MCP, and produce PRs.
+
+---
+
+## Stack & Versions
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| Next.js | 16.2.9 | ⚠ BREAKING — non-standard; read docs in `node_modules/next/dist/docs/` |
+| React | 19.2.4 | |
+| TypeScript | ^5 | strict mode, `noUncheckedIndexedAccess` OFF |
+| Tailwind CSS | ^4 | ⚠ BREAKING — CSS-first config, no `tailwind.config.js`. Use `@theme` in CSS |
+| Zod | ^4.4.3 | ⚠ BREAKING — v3 patterns (`.parse`, `.safeParse`) still work but some APIs changed |
+| better-sqlite3 | ^12.11.1 | Local SQLite, WAL mode, FK enforcement on |
+| @anthropic-ai/sdk | ^0.104.2 | |
+| @modelcontextprotocol/sdk | ^1.29.0 | |
+| @octokit/rest | ^22.0.1 | |
+| vitest | ^3.0.0 | Test runner |
+| eslint | ^9.0.0 | Flat config (`eslint.config.mjs`) |
+
+---
+
+## Key Commands
+
+```bash
+npm run dev            # Start dev server (localhost:3000)
+npm run build          # Production build — always uses cross-env NODE_ENV=production
+npm test               # vitest run --passWithNoTests
+npm run test:watch     # vitest (interactive)
+npm run test:coverage  # vitest run --coverage
+npm run lint           # eslint .
+```
+
+> **Build note:** The build script is `cross-env NODE_ENV=production next build`. Do NOT run `next build` directly — if `NODE_ENV=development` is inherited, the Next.js prerender workers crash with a React `useContext` error on `/_global-error`.
+
+---
+
+## Project Structure
+
+```
+raziel/
+├── app/
+│   ├── page.tsx              # Main UI — sidebar, task input, agent log, history
+│   ├── layout.tsx
+│   ├── global-error.tsx      # Standalone Next.js error boundary (no font context)
+│   └── api/
+│       ├── agent/route.ts    # POST — runs an agent task, SSE stream
+│       ├── repos/route.ts    # GET/PATCH/POST — repo list and registration
+│       ├── tasks/route.ts    # GET/DELETE — task history
+│       ├── tasks/[id]/log/   # GET — stored agent log for a task
+│       ├── reports/route.ts  # GET — list/read .raziel/reports/ files
+│       ├── queue/route.ts    # GET/POST — task queue
+│       └── config/route.ts   # GET/POST — system_config table
+├── lib/
+│   ├── agent.ts              # Thin router shim — dispatches to agent-cc or agent-sdk
+│   ├── agent-cc.ts           # Claude Code CLI runner (RAZ_RUNNER=cc)
+│   ├── agent-sdk.ts          # Anthropic SDK runner (default)
+│   ├── mcp-server.ts         # MCP server started by agent-cc subprocess
+│   ├── db.ts                 # SQLite schema + all DB helpers (migrations v1–v9)
+│   ├── roles.ts              # 5 role definitions, tool allowlists, system prompts
+│   ├── tools.ts              # Tool implementations (read_file, write_file, etc.)
+│   ├── dispatch.ts           # Smart intent detection (detectIntent)
+│   └── github.ts             # pushBranchAndOpenPR
+├── .raziel/
+│   ├── raziel.db             # SQLite database (WAL mode)
+│   └── reports/              # Agent-generated markdown reports
+├── vitest.config.ts
+├── eslint.config.mjs
+└── .env.example
+```
+
+---
+
+## Database & Migrations
+
+- **File:** `lib/db.ts`
+- **Current schema version:** 9 (stored in `PRAGMA user_version`)
+- **Migration pattern:** `if (VERSION < N) { db.exec(...); db.exec('PRAGMA user_version = N') }`
+- **WAL mode + FK enforcement:** Set on startup
+- **Startup safety:** Tasks stuck in `running` are auto-failed on server restart
+
+Adding a migration:
+```ts
+if (VERSION < 10) {
+  db.exec(`ALTER TABLE tasks ADD COLUMN new_col TEXT`)
+  db.exec('PRAGMA user_version = 10')
+}
+```
+
+Always wrap `ALTER TABLE` in try/catch — SQLite has no `ADD COLUMN IF NOT EXISTS`.
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | Claude API key |
+| `GITHUB_TOKEN` | Yes | Fine-grained PAT — needs `repo`, `pull_requests`, `contents` |
+| `RAZ_DB_PATH` | No | Override SQLite path (default: `.raziel/raziel.db`) |
+| `NEXT_PUBLIC_RAZ_RUNNER` | No | Set to `cc` to use the Claude Code CLI runner |
+
+Copy `.env.example` → `.env.local` to get started.
+
+---
+
+## Agent Roles
+
+| Role | Badge | Color | Can Write | Extra Gates | Description |
+|------|-------|-------|-----------|-------------|-------------|
+| RAZ-Dev | DEV | indigo | Yes | — | Features, bug fixes, refactors |
+| RAZ-Sec | SEC | red | No | `generate_report` | Security audits, read-only |
+| RAZ-QA | QA | green | Yes (tests only) | `run_tests`, `check_coverage` | Tests, coverage |
+| RAZ-Ops | OPS | amber | No | `generate_report` | Build health, ops reports |
+| RAZ-Data | DATA | purple | Yes (schema only) | `validate_migration` | DB migrations |
+
+**RAZ-Dev and RAZ-Data** must call `security_scan` before `task_complete`.
+**RAZ-Dev** must call `run_build` before `task_complete` (except `strategy` and `audit` workflows).
+
+---
+
+## Workflows
+
+| Workflow | Typical Role | When to use |
+|----------|-------------|-------------|
+| `feature` | RAZ-Dev | New functionality |
+| `fix` | RAZ-Dev | Bug fixes |
+| `refactor` | RAZ-Dev | Code cleanup, no behavior change |
+| `audit` | RAZ-Sec, RAZ-Ops | Read-only analysis |
+| `test` | RAZ-QA | Writing or improving tests |
+| `strategy` | RAZ-Ops | Planning, research, no code changes |
+| `self` | RAZ-Dev, RAZ-Ops | Improving the RAZ system itself |
+
+---
+
+## Blocked Paths (read_file / write_file both blocked)
+
+`.env`, `.env.local`, `.env.production`, `.env.development`, `.env.staging`, `.env.test`, `secrets`, `.secret`, `.secrets`, `id_rsa`, `id_ed25519`, `*.pem`, `*.key`
+
+---
+
+## Agent Collaboration
+
+- `delegate_to_role` — spawn a sub-agent **right now** and wait for the result (synchronous). Use when you need specialist review before completing.
+- `handoff_to_role` — queue a follow-up task for another role **after** you complete (async). Use when your work is done and the next step belongs to a specialist.
+
+Sub-agents share the same worktree as the parent and cannot commit — the parent owns the commit.
+
+---
+
+## Critical Rules
+
+### TypeScript
+- No `any`. No implicit `any`. Use explicit return types on all exports.
+- No commented-out code. No `// TODO` placeholders.
+- Run `npm run lint` and fix **all errors** (warnings are non-blocking) before `task_complete`.
+
+### Next.js 16
+- App Router only — no `pages/` directory.
+- Server components are the default. Mark client components with `'use client'`.
+- API routes that read from the filesystem at request time need `export const dynamic = 'force-dynamic'`.
+- `params` in dynamic routes is a `Promise` — always `await params` before destructuring.
+
+### Tailwind v4
+- No `tailwind.config.js`. Customization goes in `@theme { }` blocks in CSS.
+- Utility class names are the same as v3 but the config mechanism is completely different.
+
+### Zod v4
+- `z.object({}).parse(x)` still works.
+- `z.string().nonempty()` is deprecated — use `z.string().min(1)`.
+- `.nullable()` and `.optional()` behave slightly differently; verify before assuming.
+
+### Database
+- Always bump `PRAGMA user_version` at the end of every migration block.
+- Never `DROP TABLE` or `DELETE` without a `WHERE` clause without explicit user approval.
+- Wrap all `ALTER TABLE` in try/catch.
+
+### Security
+- Never read, log, or expose `.env` files or any value that looks like a secret.
+- Always call `security_scan` before `task_complete` (RAZ-Dev, RAZ-Data).
+- Never hardcode API keys, tokens, or credentials in code.
+- Work only within the worktree path — never escape it.
+
+### Git / PR
+- Conventional commit prefixes: `feat:`, `fix:`, `refactor:`, `chore:`, `test:`, `docs:`.
+- Do not force-push, `git reset --hard`, or `git push --force`.
+- Sub-agents do not commit — only the parent agent commits via `task_complete`.
