@@ -224,6 +224,14 @@ export function getRepo(owner: string, repo: string): RepoRow | null {
   return (db.prepare(`SELECT * FROM repos WHERE github_owner = ? AND github_repo = ?`).get(owner, repo) as RepoRow) ?? null
 }
 
+export function getRepoById(id: number): RepoRow | null {
+  return (db.prepare(`SELECT * FROM repos WHERE id = ?`).get(id) as RepoRow) ?? null
+}
+
+export function getNextQueuedTask(): TaskRow | null {
+  return (db.prepare(`SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`).get() as TaskRow) ?? null
+}
+
 export function updateRepoLocalPath(owner: string, repo: string, localPath: string) {
   db.prepare(`UPDATE repos SET local_path = ? WHERE github_owner = ? AND github_repo = ?`).run(localPath, owner, repo)
 }
