@@ -64,6 +64,10 @@ export async function POST(req: NextRequest) {
         } catch {}
       }
 
+      const keepalive = setInterval(() => {
+        try { controller.enqueue(encoder.encode(': keepalive\n\n')) } catch {}
+      }, 25_000)
+
       // Buffer log entries — skip heavy tool_result bodies to keep size manageable
       const logBuffer: object[] = []
 
@@ -164,6 +168,7 @@ export async function POST(req: NextRequest) {
         failTask(taskId, String(err))
         send({ type: 'error', message: `Fatal: ${err}` })
       } finally {
+        clearInterval(keepalive)
         controller.close()
       }
     },

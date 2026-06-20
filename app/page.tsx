@@ -118,20 +118,21 @@ interface LogEntry {
 const CC_MODE = process.env.NEXT_PUBLIC_RAZ_RUNNER === 'cc'
 
 const WORKFLOWS = [
-  { value: 'feature',  label: 'Feature'  },
-  { value: 'fix',      label: 'Fix'      },
-  { value: 'refactor', label: 'Refactor' },
-  { value: 'audit',    label: 'Audit'    },
-  { value: 'test',     label: 'Test'     },
-  { value: 'strategy', label: 'Strategy' },
+  { value: 'feature',  label: 'Feature'      },
+  { value: 'fix',      label: 'Fix'          },
+  { value: 'refactor', label: 'Refactor'     },
+  { value: 'audit',    label: 'Audit'        },
+  { value: 'test',     label: 'Test'         },
+  { value: 'strategy', label: 'Strategy'     },
+  { value: 'self',     label: 'Self-Improve' },
 ]
 
 const ROLE_COLORS_CSS: Record<string, string> = {
   'RAZ-Dev':  '#6366f1',
   'RAZ-Sec':  '#ef4444',
   'RAZ-QA':   '#22c55e',
-  'RAZ-Ops':  '#a855f7',
-  'RAZ-Data': '#f59e0b',
+  'RAZ-Ops':  '#f59e0b',
+  'RAZ-Data': '#a855f7',
 }
 
 const ROLE_DEFAULT_WORKFLOW: Record<RoleId, string> = {

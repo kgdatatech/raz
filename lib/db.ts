@@ -50,6 +50,7 @@ if (VERSION < 1) {
       UNIQUE(repo_id, key)
     );
   `)
+  db.exec('PRAGMA user_version = 1')
 }
 
 if (VERSION < 2) {
