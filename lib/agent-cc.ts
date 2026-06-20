@@ -5,7 +5,7 @@ import { spawn } from 'child_process'
 import { execSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import {
-  getMemory, listTasks, getIssue,
+  getIssue,
   createQueuedTask, setTaskParent, createAgentMessage, updateAgentMessageResult,
   saveSessionId, getSessionId,
 } from './db'
@@ -110,34 +110,17 @@ function parseRateLimitReset(msg: string): string {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 function buildSystemPrompt(params: {
-  memory:       Record<string, string>
-  pastTasks:    ReturnType<typeof listTasks>
   workflow:     string
   roleContext:  string
   issueContent?: string
   parentRole?:  string
 }): string {
-  const { memory, pastTasks, workflow, roleContext, issueContent, parentRole } = params
+  const { workflow, roleContext, issueContent, parentRole } = params
 
-  // Cap memory and history to avoid exceeding Windows CreateProcess command-line limit (32KB)
-  const MAX_MEMORY_CHARS  = 3000
-  const MAX_HISTORY_CHARS = 1500
-
-  const rawMemory = Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')
-  const memoryTruncated = rawMemory.length > MAX_MEMORY_CHARS
-    ? rawMemory.slice(0, MAX_MEMORY_CHARS) + '\n... (truncated)'
-    : rawMemory
-  const memoryBlock = Object.keys(memory).length > 0
-    ? `\n\nREPO MEMORY (what you know about this codebase):\n${memoryTruncated}`
-    : ''
-
-  const rawHistory = pastTasks.slice(0, 5).map((t) => `- [${t.status}] [${t.workflow ?? 'feature'}] ${t.description.slice(0, 80)}${t.summary ? ` → ${t.summary.slice(0, 60)}` : ''}`).join('\n')
-  const historyTruncated = rawHistory.length > MAX_HISTORY_CHARS
-    ? rawHistory.slice(0, MAX_HISTORY_CHARS) + '\n... (truncated)'
-    : rawHistory
-  const historyBlock = pastTasks.length > 0
-    ? `\n\nRECENT TASK HISTORY:\n${historyTruncated}`
-    : ''
+  // Memory and history are loaded via mcp__raz__get_memory at runtime — not injected here
+  // This keeps the --system-prompt arg small regardless of how much memory accumulates
+  const memoryBlock  = ''
+  const historyBlock = ''
 
   const issueBlock      = issueContent ? `\n\nLINKED GITHUB ISSUE:\n${issueContent}` : ''
   const delegationBlock = parentRole   ? `\n\n⚡ DELEGATED TASK: You were called by ${parentRole}. Complete your task and call mcp__raz__task_complete with a clear summary.` : ''
@@ -170,9 +153,9 @@ ${workflowGuide[workflow] ?? workflowGuide.feature}
 ══════════════════════════════════════
 MANDATORY PHASE ORDER
 ══════════════════════════════════════
-1. PLAN        → Call mcp__raz__create_plan FIRST. No exceptions.
+0. MEMORY      → Call mcp__raz__get_memory FIRST. Always. It loads everything known about this repo.
+1. PLAN        → Call mcp__raz__create_plan before any writes. No exceptions.
 2. EXPLORE     → Use Read, Glob, Grep, Bash. Read CLAUDE.md and AGENTS.md first.
-               → Check REPO MEMORY below — if a key covers what you need, trust it and skip the read.
                → After every significant read: call mcp__raz__save_memory immediately.
 3. IMPLEMENT   → Targeted, minimal changes with Edit/Write/Bash.
 4. VERIFY      → Bash("npm run build"). Fix every error.
@@ -184,6 +167,7 @@ MANDATORY PHASE ORDER
 ══════════════════════════════════════
 MCP TOOLS (RAZ-specific)
 ══════════════════════════════════════
+mcp__raz__get_memory         — load all repo memory + task history (call first, always)
 mcp__raz__create_plan        — save your plan (required before any writes)
 mcp__raz__save_memory        — persist a finding to the repo memory bank
 mcp__raz__task_complete      — signal completion with summary + files changed
@@ -262,16 +246,13 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       worktreePath = setupWorktree(repoPath, branch)
     }
 
-    const memory    = repoId ? getMemory(repoId) : {}
-    const pastTasks = repoId ? listTasks(repoId).slice(0, 10) : []
-
     let issueContent: string | undefined
     if (issueNumber && repoId) {
       const cached = getIssue(repoId, issueNumber)
       if (cached) issueContent = `#${cached.number}: ${cached.title}\n\n${cached.body ?? ''}`
     }
 
-    const systemPrompt = buildSystemPrompt({ memory, pastTasks, workflow, roleContext: roleDefinition.systemContext, issueContent, parentRole })
+    const systemPrompt = buildSystemPrompt({ workflow, roleContext: roleDefinition.systemContext, issueContent, parentRole })
 
     // Build tool allowlist: map SDK tool names to Claude Code built-in names + MCP tool names
     const builtinMap: Record<string, string> = {
@@ -289,6 +270,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       validate_migration: 'Bash',
     }
     const razMcpTools = [
+      'mcp__raz__get_memory',
       'mcp__raz__create_plan', 'mcp__raz__save_memory', 'mcp__raz__task_complete',
       'mcp__raz__security_scan', 'mcp__raz__generate_report',
       'mcp__raz__delegate_to_role', 'mcp__raz__handoff_to_role',
