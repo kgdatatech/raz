@@ -18,14 +18,14 @@ interface Rule {
 const RULES: Rule[] = [
   // ── Security ──────────────────────────────────────────────────────────────
   {
-    patterns:   [/\b(secur|vulnerabilit|xss|sql.?inject|csrf|exploit|pentest|hack|auth.?bypass|secret|leak|expos|CVE|owasp)\b/i],
+    patterns:   [/\b(security|secure|secured|vulnerable|vulnerability|vulnerabilities|xss|sql.?inject|csrf|exploit|pentest|hack|auth.?bypass|secret|secrets|leak|leaked|exposed?|exposure|CVE|owasp|posture|threat|breach|injection|credential|credentials|unauthorized|privilege|permission|attack)\b/i],
     role:       'RAZ-Sec', workflow: 'audit', confidence: 'high',
     reason:     'security keywords detected',
   },
   {
     patterns:   [/\b(audit|scan|review)\b/i, /\b(code|codebase|repo|project)\b/i],
     role:       'RAZ-Sec', workflow: 'audit', confidence: 'medium',
-    reason:     'audit + codebase target',
+    reason:     'security audit of codebase',
   },
 
   // ── Testing ───────────────────────────────────────────────────────────────
