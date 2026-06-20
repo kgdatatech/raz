@@ -410,6 +410,7 @@ export default function RazDashboard() {
   const [showQuickTasks,     setShowQuickTasks]     = useState(false)
   const [dispatch,           setDispatch]           = useState<DispatchResult | null>(null)
   const [dispatchCountdown,  setDispatchCountdown]  = useState<number | null>(null)
+  const [queueDepth,         setQueueDepth]         = useState(0)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const debounceRef  = useRef<ReturnType<typeof setTimeout>  | null>(null)
 
@@ -468,6 +469,21 @@ export default function RazDashboard() {
     }, 1000)
     return () => clearInterval(tick)
   }, [rateLimitResetAt])
+
+  useEffect(() => {
+    const poll = async (): Promise<void> => {
+      try {
+        const r = await fetch('/api/tasks/queued-count')
+        const j = await r.json() as { count: number }
+        setQueueDepth(j.count)
+      } catch {
+        // network errors are non-fatal — badge simply retains its last value
+      }
+    }
+    void poll()
+    const id = setInterval(() => { void poll() }, 5000)
+    return () => clearInterval(id)
+  }, [])
 
   function loadTasks(repoId: number) {
     fetch(`/api/tasks?repoId=${repoId}`).then((r) => r.json()).then(setTasks).catch(() => {})
@@ -1355,6 +1371,7 @@ export default function RazDashboard() {
                   {tab === 'comms'   && messages.length > 0 && <span className="ml-1.5 text-[8px] text-violet-400">{messages.length}</span>}
                   {tab === 'issues'  && allIssues.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{allIssues.length}</span>}
                   {tab === 'reports' && reports.length > 0 && <span className="ml-1.5 text-[8px] text-amber-500">{reports.length}</span>}
+                  {tab === 'brain'   && queueDepth > 0    && <span className="ml-1.5 text-[8px] bg-violet-500 text-white rounded-full px-1 min-w-[14px] text-center leading-4 inline-block">{queueDepth}</span>}
                 </button>
               ))}
             </div>
