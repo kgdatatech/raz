@@ -402,6 +402,7 @@ export default function RazDashboard() {
   const [dispatch,           setDispatch]           = useState<DispatchResult | null>(null)
   const [dispatchCountdown,  setDispatchCountdown]  = useState<number | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const debounceRef  = useRef<ReturnType<typeof setTimeout>  | null>(null)
 
   const logRef         = useRef<HTMLDivElement>(null)
   const abortRef       = useRef<AbortController | null>(null)
@@ -700,33 +701,50 @@ export default function RazDashboard() {
 
   const cancelCountdown = useCallback(() => {
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
+    if (debounceRef.current)  { clearTimeout(debounceRef.current);   debounceRef.current  = null }
     setDispatchCountdown(null)
   }, [])
 
+  function startCountdown(value: string, result: DispatchResult) {
+    setRole(result.role)
+    setWorkflow(result.workflow)
+    let secs = 5
+    setDispatchCountdown(secs)
+    countdownRef.current = setInterval(() => {
+      secs -= 1
+      if (secs <= 0) {
+        cancelCountdown()
+        runTask({ description: value, role: result.role, workflow: result.workflow })
+      } else {
+        setDispatchCountdown(secs)
+      }
+    }, 1000)
+  }
+
   function handleTaskInput(value: string) {
     setTask(value)
-    cancelCountdown()
+    // Cancel any in-flight countdown or pending debounce on every keystroke
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; setDispatchCountdown(null) }
+    if (debounceRef.current)  { clearTimeout(debounceRef.current);   debounceRef.current  = null }
+
     if (!value.trim() || value.trim().length < 8) { setDispatch(null); return }
+
+    // Dispatch chip updates live so user sees the detected role while typing
     const result = detectIntent(value)
     setDispatch(result)
-    // In supervised/autonomous mode, start countdown to auto-run
+
+    if (razMode === 'standard') {
+      setRole(result.role)
+      setWorkflow(result.workflow)
+      return
+    }
+
+    // Supervised / Autonomous: wait 1.5 s after the user stops typing, then start the 5 s countdown
     if ((razMode === 'supervised' || razMode === 'autonomous') && !running && selectedRepo && (selectedRepo.local_path || localPath.trim())) {
-      setRole(result.role)
-      setWorkflow(result.workflow)
-      let secs = 4
-      setDispatchCountdown(secs)
-      countdownRef.current = setInterval(() => {
-        secs -= 1
-        if (secs <= 0) {
-          cancelCountdown()
-          runTask({ description: value, role: result.role, workflow: result.workflow })
-        } else {
-          setDispatchCountdown(secs)
-        }
-      }, 1000)
-    } else if (razMode === 'standard') {
-      setRole(result.role)
-      setWorkflow(result.workflow)
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null
+        startCountdown(value, result)
+      }, 1500)
     }
   }
 
