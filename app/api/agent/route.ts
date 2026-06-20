@@ -104,15 +104,26 @@ export async function POST(req: NextRequest) {
         saveTaskLog(taskId, logBuffer)
 
         if (completionData && !completionData.commit_skipped) {
-          // Check whether the agent actually committed anything before attempting a PR
+          // Check whether the agent actually committed anything before attempting a PR.
+          // Must reference the feature branch by name, not HEAD — HEAD points to master
+          // in the main repo, not to the worktree branch where commits were made.
           let commitsAhead = 0
           try {
             const result = execSync(
-              `git rev-list origin/${baseBranch}..HEAD --count`,
+              `git rev-list origin/${baseBranch}..${branch} --count`,
               { cwd: repoPath, encoding: 'utf8' }
             ).trim()
             commitsAhead = parseInt(result, 10) || 0
-          } catch { commitsAhead = 0 }
+          } catch {
+            try {
+              // Fallback: compare against local base branch if remote ref isn't available
+              const result = execSync(
+                `git rev-list ${baseBranch}..${branch} --count`,
+                { cwd: repoPath, encoding: 'utf8' }
+              ).trim()
+              commitsAhead = parseInt(result, 10) || 0
+            } catch { commitsAhead = 0 }
+          }
 
           if (commitsAhead === 0) {
             // Read-only task (audit/strategy) — no commits, no PR needed
