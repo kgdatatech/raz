@@ -232,6 +232,11 @@ export function getNextQueuedTask(): TaskRow | null {
   return (db.prepare(`SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`).get() as TaskRow) ?? null
 }
 
+export function countQueuedTasks(): number {
+  const row = db.prepare(`SELECT COUNT(*) as count FROM tasks WHERE status = 'queued'`).get() as { count: number }
+  return row.count
+}
+
 export function updateRepoLocalPath(owner: string, repo: string, localPath: string) {
   db.prepare(`UPDATE repos SET local_path = ? WHERE github_owner = ? AND github_repo = ?`).run(localPath, owner, repo)
 }
