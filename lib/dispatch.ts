@@ -42,9 +42,9 @@ const RULES: Rule[] = [
     reason:     'strategic planning intent',
   },
   {
-    patterns:   [/\b(audit|review|assess|analyz|evaluat|investigat|understand|survey)\b/i],
+    patterns:   [/\b(audit|review|assess|analyz|evaluat|investigat|understand|survey|gap|gaps|missing|oversight|coverage|concern|attention|look.?at|check.?for|what.?need|anything.?wrong|anything.?broken|what.?issues)\b/i],
     role:       'RAZ-Ops', workflow: 'audit', confidence: 'medium',
-    reason:     'analytical review intent',
+    reason:     'audit / gap-finding intent',
   },
 
   // ── Data ──────────────────────────────────────────────────────────────────
@@ -94,5 +94,5 @@ export function detectIntent(description: string): DispatchResult {
   }
 
   // Default fallback
-  return { role: 'RAZ-Dev', workflow: 'feature', confidence: 'low', reason: 'no strong signal — defaulting to RAZ-Dev feature' }
+  return { role: 'RAZ-Dev', workflow: 'feature', confidence: 'low', reason: 'no clear signal detected' }
 }

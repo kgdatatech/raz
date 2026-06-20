@@ -933,7 +933,9 @@ export default function RazDashboard() {
                     <span className="text-[8px] text-gray-300">·</span>
                     <span className="text-[9px] text-gray-500">{dispatch.workflow}</span>
                   </div>
-                  <span className="text-[8px] text-gray-400 italic flex-1">{dispatch.reason}</span>
+                  {dispatch.confidence !== 'low' && (
+                    <span className="text-[8px] text-gray-400 italic flex-1">{dispatch.reason}</span>
+                  )}
                   <button onClick={() => { setDispatch(null); cancelCountdown(); setShowOptions(true) }}
                     className="text-[8px] text-gray-400 hover:text-gray-700 underline">override</button>
                 </div>
