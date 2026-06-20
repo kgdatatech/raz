@@ -40,9 +40,9 @@ export async function POST(req: NextRequest) {
     resetTaskToRunning(taskId)
   } else {
     taskId = randomUUID()
-    const taskSlug = description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 30).replace(/-$/, '')
-    const roleSlug = role.toLowerCase()
-    branch         = `${roleSlug}/${taskSlug}-${taskId.slice(0, 6)}`
+    const taskSlug = description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 20).replace(/-$/, '')
+    const roleSlug = role.toLowerCase().slice(0, 12)
+    branch         = `${roleSlug}/${taskSlug}-${taskId.slice(0, 6)}`.slice(0, 50)
     upsertRepo(owner, repo, baseBranch, repoPath)
     createTask(taskId, repoRow.id, description, branch, workflow, issueNumber, role)
   }
