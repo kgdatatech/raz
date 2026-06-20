@@ -834,7 +834,7 @@ export default function RazDashboard() {
           <span className="text-base font-bold tracking-tight text-gray-900" style={{ fontFamily: 'var(--font-display)' }}>RAZ</span>
           <span className="text-[10px] text-gray-400">Archon Systems · Agent v2</span>
           {razMode !== 'standard' && (
-            <span className={`text-[8px] font-semibold px-1.5 py-0.5 rounded ${razMode === 'autonomous' ? 'bg-violet-900/40 text-violet-400 border border-violet-700/40' : 'bg-amber-900/40 text-amber-400 border border-amber-700/40'}`}>
+            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${razMode === 'autonomous' ? 'bg-violet-600 text-white' : 'bg-amber-500 text-white'}`}>
               {razMode === 'autonomous' ? '⚡ Autonomous' : '◎ Supervised'}
             </span>
           )}
