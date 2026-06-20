@@ -2,8 +2,8 @@ import { NextRequest } from 'next/server'
 import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { runAgent } from '@/lib/agent'
-import { pushBranchAndOpenPR } from '@/lib/github'
-import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId } from '@/lib/db'
+import { pushBranchAndOpenPR, mergePR } from '@/lib/github'
+import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId, getConfig } from '@/lib/db'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from '@/lib/roles'
 
 export const runtime    = 'nodejs'
@@ -67,6 +67,16 @@ export async function POST(req: NextRequest) {
       const keepalive = setInterval(() => {
         try { controller.enqueue(encoder.encode(': keepalive\n\n')) } catch {}
       }, 25_000)
+
+      // Sync local base branch with remote before creating worktree.
+      // Prevents stale-base conflicts when PRs have merged on GitHub since the last sync.
+      try {
+        execSync(`git fetch origin`, { cwd: repoPath, stdio: 'pipe' })
+        execSync(`git merge --ff-only origin/${baseBranch}`, { cwd: repoPath, stdio: 'pipe' })
+        send({ type: 'thinking', message: `Synced local ${baseBranch} with origin` })
+      } catch {
+        send({ type: 'thinking', message: `Warning: could not sync ${baseBranch} with origin — proceeding with current local state` })
+      }
 
       // Buffer log entries — skip heavy tool_result bodies to keep size manageable
       const logBuffer: object[] = []
@@ -163,6 +173,23 @@ export async function POST(req: NextRequest) {
 
             completeTask(taskId, prUrl, summary, files)
             send({ type: 'complete', message: 'PR opened.', data: { prUrl, branch, taskId } })
+
+            // In Autonomous mode: auto-merge the PR and sync local master so the
+            // next queued task always branches from the latest state.
+            const razMode = getConfig('raz_mode') ?? 'directed'
+            if (razMode === 'autonomous') {
+              const prNumber = parseInt(prUrl.split('/').pop() ?? '0', 10)
+              if (prNumber) {
+                try {
+                  await mergePR(owner, repo, prNumber)
+                  execSync(`git fetch origin`, { cwd: repoPath, stdio: 'pipe' })
+                  execSync(`git merge --ff-only origin/${baseBranch}`, { cwd: repoPath, stdio: 'pipe' })
+                  send({ type: 'thinking', message: `Auto-merged PR #${prNumber} and synced local ${baseBranch}` })
+                } catch (mergeErr) {
+                  send({ type: 'thinking', message: `PR #${prNumber} opened but auto-merge failed: ${mergeErr}` })
+                }
+              }
+            }
           } catch (e) {
             failTask(taskId, `PR failed: ${e}`)
             send({ type: 'error', message: `Task complete but PR failed: ${e}` })

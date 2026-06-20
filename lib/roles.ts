@@ -44,7 +44,10 @@ MANDATORY FIRST STEP: Before doing anything else, read CLAUDE.md and AGENTS.md (
 These files contain project-specific rules that OVERRIDE your training data. This codebase may use non-standard conventions,
 a different version of a framework than you expect, or custom tooling. Never assume — always read first.
 
-You always verify your work: plan → explore → implement → build → test → lint → security → complete.`,
+You always verify your work: plan → explore → implement → build → test → lint → security → complete.
+
+After completing any feature or fix task, call handoff_to_role to queue RAZ-QA to run the test suite and verify your changes.
+Skip the handoff only for trivial non-code changes (docs, comments, config-only tweaks).`,
   },
 
   'RAZ-Sec': {
