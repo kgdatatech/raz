@@ -90,11 +90,13 @@ interface HandoffSuggestion {
 }
 
 interface LogEntry {
-  type:    'thinking' | 'tool_call' | 'tool_result' | 'plan' | 'usage' | 'complete' | 'error' | 'delegation' | 'handoff'
+  type:    'thinking' | 'tool_call' | 'tool_result' | 'plan' | 'usage' | 'complete' | 'error' | 'delegation' | 'handoff' | 'ask_user'
   message: string
   data?:   Record<string, unknown>
   ts:      number
 }
+
+const CC_MODE = process.env.NEXT_PUBLIC_RAZ_RUNNER === 'cc'
 
 const WORKFLOWS = [
   { value: 'feature',  label: 'Feature'  },
@@ -131,6 +133,7 @@ const TYPE_STYLES: Record<LogEntry['type'], string> = {
   error:       'text-red-500',
   delegation:  'text-violet-600',
   handoff:     'text-amber-600',
+  ask_user:    'text-orange-600',
 }
 
 const TYPE_PREFIX: Record<LogEntry['type'], string> = {
@@ -143,6 +146,7 @@ const TYPE_PREFIX: Record<LogEntry['type'], string> = {
   error:       '✗',
   delegation:  '⇒',
   handoff:     '⟶',
+  ask_user:    '?',
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -341,8 +345,10 @@ export default function RazDashboard() {
   const [loadingRepos,    setLoadingRepos]    = useState(true)
   const [activePlan,      setActivePlan]      = useState<string | null>(null)
   const [elapsed,         setElapsed]         = useState(0)
-  const [liveCost,        setLiveCost]        = useState<number>(0)
-  const [finalCost,       setFinalCost]       = useState<number | null>(null)
+  const [liveCost,           setLiveCost]           = useState<number>(0)
+  const [finalCost,          setFinalCost]          = useState<number | null>(null)
+  const [rateLimitResetAt,   setRateLimitResetAt]   = useState<Date | null>(null)
+  const [rateLimitSecondsLeft, setRateLimitSecondsLeft] = useState(0)
   const [selectedTask,    setSelectedTask]    = useState<TaskRow | null>(null)
   const [planOpen,        setPlanOpen]        = useState(false)
   const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues' | 'reports'>('history')
@@ -356,6 +362,9 @@ export default function RazDashboard() {
   const [queue,           setQueue]           = useState<QueueItem[]>([])
   const [handoffSuggestions, setHandoffSuggestions] = useState<HandoffSuggestion[]>([])
   const [historyFilter,      setHistoryFilter]      = useState('')
+  const [answeredQuestions,  setAnsweredQuestions]  = useState<Map<string, string>>(new Map())
+  const [questionInputs,     setQuestionInputs]     = useState<Record<string, string>>({})
+  const [pendingQuestionId,  setPendingQuestionId]  = useState<string | null>(null)
 
   const logRef   = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -392,6 +401,16 @@ export default function RazDashboard() {
   useEffect(() => {
     if (workflow === 'fix' && selectedRepo && issues.length === 0) loadIssues(selectedRepo)
   }, [workflow, selectedRepo])
+
+  useEffect(() => {
+    if (!rateLimitResetAt) return
+    const tick = setInterval(() => {
+      const left = Math.max(0, Math.floor((rateLimitResetAt.getTime() - Date.now()) / 1000))
+      setRateLimitSecondsLeft(left)
+      if (left === 0) { setRateLimitResetAt(null); clearInterval(tick) }
+    }, 1000)
+    return () => clearInterval(tick)
+  }, [rateLimitResetAt])
 
   function loadTasks(repoId: number) {
     fetch(`/api/tasks?repoId=${repoId}`).then((r) => r.json()).then(setTasks).catch(() => {})
@@ -454,9 +473,19 @@ export default function RazDashboard() {
   function appendLog(entry: Omit<LogEntry, 'ts'>) {
     setLog((prev) => [...prev, { ...entry, ts: Date.now() }])
     if (entry.type === 'plan') { setActivePlan(entry.message); setPlanOpen(true) }
-    if (entry.type === 'usage') setLiveCost((entry.data?.costUsd as number) ?? 0)
-    if (entry.type === 'complete') setFinalCost((entry.data?.costUsd as number) ?? liveCost)
-    if (entry.type === 'error')    setFinalCost((prev) => prev ?? liveCost)
+    if (entry.type === 'ask_user' && entry.data?.questionId) {
+      setPendingQuestionId(entry.data.questionId as string)
+    }
+    if (CC_MODE) {
+      if (entry.type === 'error' && entry.data?.rateLimited) {
+        const resetAt = entry.data.resetAt as string | undefined
+        setRateLimitResetAt(resetAt ? new Date(resetAt) : new Date(Date.now() + 3_600_000))
+      }
+    } else {
+      if (entry.type === 'usage')    setLiveCost((entry.data?.costUsd as number) ?? 0)
+      if (entry.type === 'complete') setFinalCost((entry.data?.costUsd as number) ?? liveCost)
+      if (entry.type === 'error')    setFinalCost((prev) => prev ?? liveCost)
+    }
     setTimeout(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' }), 50)
   }
 
@@ -579,6 +608,18 @@ export default function RazDashboard() {
 
   function dismissHandoff(taskId: string) {
     setHandoffSuggestions((prev) => prev.filter((h) => h.taskId !== taskId))
+  }
+
+  async function submitAnswer(questionId: string, answer: string) {
+    if (!answer.trim()) return
+    await fetch('/api/agent/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questionId, answer: answer.trim() }),
+    }).catch(() => {})
+    setAnsweredQuestions((prev) => new Map(prev).set(questionId, answer.trim()))
+    setQuestionInputs((prev) => { const next = { ...prev }; delete next[questionId]; return next })
+    if (pendingQuestionId === questionId) setPendingQuestionId(null)
   }
 
   async function handleDeleteTask(id: string) {
@@ -808,10 +849,10 @@ export default function RazDashboard() {
         </div>
 
         {/* ── Right panel ─────────────────────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
 
           {/* Agent Log */}
-          <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
             <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center justify-between px-4">
               <span className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest">Agent Log</span>
               <div className="flex items-center gap-3">
@@ -822,7 +863,12 @@ export default function RazDashboard() {
                   </>
                 )}
                 {prUrl && <a href={prUrl} target="_blank" rel="noreferrer" className="text-[10px] text-green-700 font-semibold underline underline-offset-2">✓ View PR ↗</a>}
-                {(running || finalCost !== null) && <span className="text-[10px] font-mono text-gray-400">${(finalCost ?? liveCost).toFixed(4)}</span>}
+                {CC_MODE
+                  ? rateLimitResetAt && rateLimitSecondsLeft > 0
+                    ? <span className="text-[10px] font-mono text-amber-500">limit — {Math.floor(rateLimitSecondsLeft / 60)}m {String(rateLimitSecondsLeft % 60).padStart(2, '0')}s</span>
+                    : null
+                  : (running || finalCost !== null) && <span className="text-[10px] font-mono text-gray-400">${(finalCost ?? liveCost).toFixed(4)}</span>
+                }
                 {running && (
                   <>
                     <span className="text-[10px] font-mono text-gray-400">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</span>
@@ -831,6 +877,12 @@ export default function RazDashboard() {
                 )}
               </div>
             </div>
+            {pendingQuestionId && !answeredQuestions.has(pendingQuestionId) && (
+              <div className="flex-shrink-0 bg-orange-50 border-b border-orange-200 px-4 py-2 flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse flex-shrink-0" />
+                <span className="text-[10px] font-semibold text-orange-700">Agent is waiting for your answer — scroll down in the log</span>
+              </div>
+            )}
             <div ref={logRef} className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-px bg-gray-50 font-mono text-[10px]">
               {log.length === 0 && !running && (
                 <div className="h-full flex items-center justify-center"><span className="text-xs text-gray-300">Select a repo, set a task, and run.</span></div>
@@ -844,12 +896,12 @@ export default function RazDashboard() {
                   : null
                 return (
                   <React.Fragment key={i}>
-                    <div className={`flex gap-2 leading-relaxed ${TYPE_STYLES[entry.type]} ${isDelegated ? 'pl-4 opacity-75' : ''} ${isDelStart ? 'mt-1 border-l-2 border-violet-300 pl-2' : ''} ${isDelEnd ? 'border-l-2 border-violet-300 pl-2 mb-1' : ''}`}>
+                    <div className={`flex gap-2 leading-relaxed overflow-hidden ${TYPE_STYLES[entry.type]} ${isDelegated ? 'pl-4 opacity-75' : ''} ${isDelStart ? 'mt-1 border-l-2 border-violet-300 pl-2' : ''} ${isDelEnd ? 'border-l-2 border-violet-300 pl-2 mb-1' : ''}`}>
                       <span className="shrink-0 text-[8px] text-gray-300 w-14 text-right pt-px">
                         {new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                       </span>
                       <span className="shrink-0 w-3 text-center">{TYPE_PREFIX[entry.type]}</span>
-                      <span className="break-words min-w-0 flex-1">
+                      <span className="min-w-0 flex-1 break-all [overflow-wrap:anywhere]">
                         {entry.type === 'tool_call'
                           ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? ` — ${JSON.stringify(entry.data.input).slice(0, 120)}` : ''}</>
                           : entry.type === 'plan'
@@ -878,14 +930,69 @@ export default function RazDashboard() {
                         </div>
                       </div>
                     )}
+                    {entry.type === 'ask_user' && entry.data?.questionId && (() => {
+                      const qId      = entry.data.questionId as string
+                      const question = entry.data.question as string
+                      const options  = entry.data.options as Array<{ label: string; description?: string }> | undefined
+                      const isAnswered = answeredQuestions.has(qId)
+                      const myAnswer   = answeredQuestions.get(qId)
+                      if (isAnswered) {
+                        return (
+                          <div className="ml-[68px] my-1 font-sans">
+                            <div className="border border-green-200 rounded-md bg-green-50 px-3 py-1.5 max-w-sm">
+                              <span className="text-[10px] text-green-700">You answered: <strong className="font-semibold">{myAnswer}</strong></span>
+                            </div>
+                          </div>
+                        )
+                      }
+                      return (
+                        <div className="ml-[68px] my-1.5 font-sans">
+                          <div className="border border-orange-300 rounded-md overflow-hidden bg-orange-50 max-w-md shadow-sm">
+                            <div className="px-3 py-1.5 flex items-center gap-1.5 border-b border-orange-200 bg-orange-100">
+                              <span className="text-[9px] font-bold text-orange-700">? AGENT QUESTION</span>
+                              <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse ml-auto" />
+                            </div>
+                            <div className="px-3 py-2.5">
+                              <p className="text-[11px] text-gray-800 font-medium mb-2.5 leading-snug">{question}</p>
+                              {options && options.length > 0 ? (
+                                <div className="flex flex-col gap-1.5">
+                                  {options.map((opt) => (
+                                    <button key={opt.label} onClick={() => submitAnswer(qId, opt.label)}
+                                      className="text-left px-2.5 py-2 border border-orange-200 rounded-md text-[10px] text-gray-700 bg-white hover:bg-orange-100 hover:border-orange-400 transition-colors">
+                                      <span className="font-semibold text-gray-800">{opt.label}</span>
+                                      {opt.description && <span className="text-gray-500 ml-1">— {opt.description}</span>}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="flex gap-1.5">
+                                  <input
+                                    value={questionInputs[qId] ?? ''}
+                                    onChange={(e) => setQuestionInputs((prev) => ({ ...prev, [qId]: e.target.value }))}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') submitAnswer(qId, questionInputs[qId] ?? '') }}
+                                    placeholder="Type your answer..."
+                                    autoFocus
+                                    className="flex-1 text-[10px] border border-orange-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-orange-400 bg-white placeholder-gray-400"
+                                  />
+                                  <button onClick={() => submitAnswer(qId, questionInputs[qId] ?? '')}
+                                    className="px-3 py-1.5 bg-orange-500 text-white text-[10px] font-semibold rounded-md hover:bg-orange-600 transition-colors">
+                                    Send
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })()}
                   </React.Fragment>
                 )
               })}
               {running && (
-                <div className="flex gap-2 text-gray-300 animate-pulse">
+                <div className={`flex gap-2 animate-pulse ${pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? 'text-orange-400' : 'text-gray-300'}`}>
                   <span className="w-14 text-right text-[8px]" />
-                  <span className="w-3 text-center">·</span>
-                  <span>working...</span>
+                  <span className="w-3 text-center">{pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? '?' : '·'}</span>
+                  <span>{pendingQuestionId && !answeredQuestions.has(pendingQuestionId) ? 'waiting for your answer...' : 'working...'}</span>
                 </div>
               )}
             </div>

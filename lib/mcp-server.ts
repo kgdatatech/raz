@@ -15,7 +15,8 @@ const GITHUB_REPO  = process.env.RAZ_GITHUB_REPO  ?? ''
 const DB_DIR      = path.dirname(process.env.RAZ_DB_PATH ?? path.join(process.cwd(), '.raziel', 'raziel.db'))
 const REPORTS_DIR = path.join(DB_DIR, 'reports')
 
-import { setMemory, getMemory, listTasks, savePlan, saveSessionId } from './db'
+import { randomUUID } from 'crypto'
+import { setMemory, getMemory, listTasks, savePlan, saveSessionId, createQuestion, getQuestionAnswer } from './db'
 
 const server = new McpServer({ name: 'raz', version: '1.0.0' })
 
@@ -41,6 +42,32 @@ server.tool(
   async ({ key, value }) => {
     if (REPO_ID) setMemory(REPO_ID, key, value)
     return { content: [{ type: 'text' as const, text: `Memory saved: ${key}` }] }
+  },
+)
+
+// ── ask_user ──────────────────────────────────────────────────────────────────
+server.tool(
+  'ask_user',
+  'Ask the user a question and wait for their response before continuing. Use when you need a decision, confirmation, or information only the user can provide. The UI will show a prompt and block until they answer.',
+  {
+    question:   z.string().describe('The question to ask the user'),
+    options:    z.array(z.object({ label: z.string(), description: z.string().optional() })).optional().describe('Multiple choice options. Omit for free-text input.'),
+    input_type: z.enum(['choice', 'text']).optional().describe('"choice" (buttons) or "text" (input box). Inferred from options if omitted.'),
+  },
+  async ({ question, options, input_type }) => {
+    const qId = randomUUID()
+    createQuestion(qId, TASK_ID, question, options, input_type ?? (options?.length ? 'choice' : 'text'))
+
+    let waited = 0
+    while (waited < 300_000) {
+      await new Promise((r) => setTimeout(r, 1_000))
+      waited += 1_000
+      const answer = getQuestionAnswer(qId)
+      if (answer !== null) {
+        return { content: [{ type: 'text' as const, text: `User answered: "${answer}"` }] }
+      }
+    }
+    return { content: [{ type: 'text' as const, text: 'No response received within 5 minutes. Use your best judgment to proceed, or call task_complete explaining the blocker.' }] }
   },
 )
 

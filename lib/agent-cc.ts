@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto'
 import {
   getIssue,
   createQueuedTask, setTaskParent, createAgentMessage, updateAgentMessageResult,
-  saveSessionId, getSessionId,
+  saveSessionId, getSessionId, getPendingQuestions,
 } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
 import type { AgentTask, AgentEvent, EventCallback } from './agent-sdk'
@@ -168,6 +168,7 @@ MANDATORY PHASE ORDER
 MCP TOOLS (RAZ-specific)
 ══════════════════════════════════════
 mcp__raz__get_memory         — load all repo memory + task history (call first, always)
+mcp__raz__ask_user           — ask the user a question and wait for their answer (blocks until they respond)
 mcp__raz__create_plan        — save your plan (required before any writes)
 mcp__raz__save_memory        — persist a finding to the repo memory bank
 mcp__raz__task_complete      — signal completion with summary + files changed
@@ -180,6 +181,13 @@ mcp__raz__list_open_issues   — list open GitHub issues
 
 BUILT-IN TOOLS (use for all file and shell work)
 Read, Write, Edit, Bash, Glob, Grep
+
+══════════════════════════════════════
+WHEN TO ASK THE USER
+══════════════════════════════════════
+If you need a decision only the user can make (e.g. framework choice, business rule, which approach to take),
+call mcp__raz__ask_user BEFORE proceeding. Do NOT guess and proceed — block and wait for the answer.
+The UI will present your question interactively. You will receive the user's response as the tool result.
 
 ══════════════════════════════════════
 SECURITY RULES — ABSOLUTE
@@ -271,6 +279,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     }
     const razMcpTools = [
       'mcp__raz__get_memory',
+      'mcp__raz__ask_user',
       'mcp__raz__create_plan', 'mcp__raz__save_memory', 'mcp__raz__task_complete',
       'mcp__raz__security_scan', 'mcp__raz__generate_report',
       'mcp__raz__delegate_to_role', 'mcp__raz__handoff_to_role',
@@ -419,6 +428,26 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       onEvent({ type: 'delegation', message: `← ${subRole} ${subFailed ? 'failed' : 'complete'}: ${subSummary.slice(0, 100)}`, data: { subRole, subTaskId, complete: true, failed: subFailed } })
     }, 500)
 
+    // ── Question poller — surface ask_user questions to the UI ───────────────
+    const emittedQuestions = new Set<string>()
+    const questionPoller = setInterval(() => {
+      const pending = getPendingQuestions(taskId)
+      for (const q of pending) {
+        if (emittedQuestions.has(q.id)) continue
+        emittedQuestions.add(q.id)
+        onEvent({
+          type:    'ask_user',
+          message: q.question,
+          data: {
+            questionId: q.id,
+            question:   q.question,
+            options:    q.options ? JSON.parse(q.options) : undefined,
+            inputType:  q.input_type,
+          },
+        })
+      }
+    }, 500)
+
     // ── Handoff processing from result ────────────────────────────────────────
     const processHandoffs = () => {
       const handoffPath = path.join(worktreePath!, '.raziel-handoff.json')
@@ -462,6 +491,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     await new Promise<void>((resolve) => {
       claudeProc.on('close', () => {
         clearInterval(delegationPoller)
+        clearInterval(questionPoller)
         if (buffer.trim()) processLine(buffer)
         processHandoffs()
         resolve()

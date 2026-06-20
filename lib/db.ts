@@ -2,8 +2,8 @@ import Database from 'better-sqlite3'
 import path from 'path'
 import fs from 'fs'
 
-const DB_DIR  = path.join(process.cwd(), '.raziel')
-const DB_PATH = path.join(DB_DIR, 'raziel.db')
+const DB_DIR  = process.env.RAZ_DB_PATH ? path.dirname(process.env.RAZ_DB_PATH) : path.join(process.cwd(), '.raziel')
+const DB_PATH = process.env.RAZ_DB_PATH ?? path.join(DB_DIR, 'raziel.db')
 
 fs.mkdirSync(DB_DIR, { recursive: true })
 
@@ -125,6 +125,27 @@ if (VERSION < 5) {
 if (VERSION < 6) {
   try { db.exec(`ALTER TABLE tasks ADD COLUMN log_json TEXT`) } catch {}
   db.exec('PRAGMA user_version = 6')
+}
+
+if (VERSION < 7) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN session_id TEXT`) } catch {}
+  db.exec('PRAGMA user_version = 7')
+}
+
+if (VERSION < 8) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_questions (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      question    TEXT NOT NULL,
+      options     TEXT,
+      input_type  TEXT NOT NULL DEFAULT 'choice',
+      answer      TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      answered_at TEXT
+    )
+  `)
+  db.exec('PRAGMA user_version = 8')
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -288,6 +309,15 @@ export function resetTaskToRunning(taskId: string): void {
   db.prepare(`UPDATE tasks SET status = 'running', error = NULL, completed_at = NULL WHERE id = ?`).run(taskId)
 }
 
+export function saveSessionId(taskId: string, sessionId: string): void {
+  db.prepare(`UPDATE tasks SET session_id = ? WHERE id = ?`).run(sessionId, taskId)
+}
+
+export function getSessionId(taskId: string): string | null {
+  const row = db.prepare(`SELECT session_id FROM tasks WHERE id = ?`).get(taskId) as { session_id: string | null } | undefined
+  return row?.session_id ?? null
+}
+
 // ─── Memory ───────────────────────────────────────────────────────────────────
 
 export interface MemoryRow {
@@ -421,6 +451,51 @@ export function listAgentMessages(repoId: number): AgentMessageRow[] {
   return db.prepare(
     `SELECT * FROM agent_messages WHERE repo_id = ? ORDER BY created_at DESC LIMIT 100`
   ).all(repoId) as AgentMessageRow[]
+}
+
+// ─── Agent Questions ──────────────────────────────────────────────────────────
+
+export interface AgentQuestionRow {
+  id:          string
+  task_id:     string
+  question:    string
+  options:     string | null
+  input_type:  string
+  answer:      string | null
+  created_at:  string
+  answered_at: string | null
+}
+
+export function createQuestion(
+  id:        string,
+  taskId:    string,
+  question:  string,
+  options?:  Array<{ label: string; description?: string }>,
+  inputType?: string,
+) {
+  db.prepare(`
+    INSERT INTO agent_questions (id, task_id, question, options, input_type)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, taskId, question, options ? JSON.stringify(options) : null, inputType ?? (options?.length ? 'choice' : 'text'))
+}
+
+export function getPendingQuestions(taskId: string): AgentQuestionRow[] {
+  return db.prepare(
+    `SELECT * FROM agent_questions WHERE task_id = ? AND answered_at IS NULL ORDER BY created_at ASC`
+  ).all(taskId) as AgentQuestionRow[]
+}
+
+export function answerQuestion(id: string, answer: string) {
+  db.prepare(
+    `UPDATE agent_questions SET answer = ?, answered_at = datetime('now') WHERE id = ?`
+  ).run(answer, id)
+}
+
+export function getQuestionAnswer(id: string): string | null {
+  const row = db.prepare(
+    `SELECT answer, answered_at FROM agent_questions WHERE id = ?`
+  ).get(id) as { answer: string | null; answered_at: string | null } | undefined
+  return row?.answered_at ? (row.answer ?? '') : null
 }
 
 // On startup, any task still 'running' was interrupted by a server restart
