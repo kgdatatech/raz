@@ -312,7 +312,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
   const {
     taskId, repoPath, description, branch, workflow,
     role, repoId, issueNumber, github, checkpointMessages,
-    parentTaskId, parentRole, maxIterations = 40, existingWorktree,
+    parentRole, maxIterations = 40, existingWorktree,
   } = task
 
   const roleDefinition = ROLES[role ?? DEFAULT_ROLE]
