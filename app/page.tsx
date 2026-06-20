@@ -390,7 +390,7 @@ export default function RazDashboard() {
   const [messages,        setMessages]        = useState<AgentMessageRow[]>([])
   const [allIssues,       setAllIssues]       = useState<IssueRow[]>([])
   const [issueFilter,     setIssueFilter]     = useState<'open' | 'closed'>('open')
-  const [prStatus,        setPrStatus]        = useState<PrStatusRow | null>(null)
+  const [_prStatus,       setPrStatus]        = useState<PrStatusRow | null>(null)
   const [prDetails,       setPrDetails]       = useState<PRDetails | null>(null)
   const [prDetailsLoading, setPrDetailsLoading] = useState(false)
   const [prActionLoading, setPrActionLoading] = useState<string | null>(null)
@@ -1261,7 +1261,7 @@ export default function RazDashboard() {
                         </div>
                       </div>
                     )}
-                    {entry.type === 'ask_user' && entry.data?.questionId && (() => {
+                    {entry.type === 'ask_user' && !!entry.data?.questionId && (() => {
                       const qId      = entry.data.questionId as string
                       const question = entry.data.question as string
                       const options  = entry.data.options as Array<{ label: string; description?: string }> | undefined

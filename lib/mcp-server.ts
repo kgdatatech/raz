@@ -16,7 +16,7 @@ const DB_DIR      = path.dirname(process.env.RAZ_DB_PATH ?? path.join(process.cw
 const REPORTS_DIR = path.join(DB_DIR, 'reports')
 
 import { randomUUID } from 'crypto'
-import { setMemory, getMemory, listTasks, savePlan, saveSessionId, createQuestion, getQuestionAnswer, getConfig } from './db'
+import { setMemory, getMemory, listTasks, savePlan, createQuestion, getQuestionAnswer, getConfig } from './db'
 
 async function checkPauseOrAbort() {
   while (true) {
