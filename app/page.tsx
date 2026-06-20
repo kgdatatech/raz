@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { ROLES, ROLE_IDS, type RoleId, DEFAULT_ROLE } from '@/lib/roles'
+import BrainView from './components/BrainView'
 
 interface RepoRow {
   id:             number
@@ -368,7 +369,7 @@ export default function RazDashboard() {
   const [rateLimitSecondsLeft, setRateLimitSecondsLeft] = useState(0)
   const [selectedTask,    setSelectedTask]    = useState<TaskRow | null>(null)
   const [planOpen,        setPlanOpen]        = useState(false)
-  const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues' | 'reports'>('history')
+  const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues' | 'reports' | 'brain'>('history')
   const [memory,          setMemory]          = useState<MemoryRow[]>([])
   const [messages,        setMessages]        = useState<AgentMessageRow[]>([])
   const [allIssues,       setAllIssues]       = useState<IssueRow[]>([])
@@ -1126,9 +1127,9 @@ export default function RazDashboard() {
           </div>
 
           {/* Bottom panel */}
-          <div className="h-56 flex-shrink-0 border-t border-gray-200 flex flex-col">
+          <div className={`${bottomTab === 'brain' ? 'h-96' : 'h-56'} flex-shrink-0 border-t border-gray-200 flex flex-col transition-all duration-200`}>
             <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center">
-              {(['history', 'memory', 'comms', 'issues', 'reports'] as const).map((tab) => (
+              {(['history', 'memory', 'comms', 'issues', 'reports', 'brain'] as const).map((tab) => (
                 <button key={tab} onClick={() => {
                   setBottomTab(tab)
                   if (tab === 'memory'  && selectedRepo) loadMemory(selectedRepo.id)
@@ -1136,7 +1137,7 @@ export default function RazDashboard() {
                   if (tab === 'issues'  && selectedRepo) loadAllIssues(selectedRepo.id, issueFilter)
                   if (tab === 'reports') loadReports()
                 }}
-                  className={`h-full px-4 text-[9px] font-semibold uppercase tracking-widest border-b-2 transition-colors capitalize ${bottomTab === tab ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
+                  className={`h-full px-4 text-[9px] font-semibold uppercase tracking-widest border-b-2 transition-colors capitalize ${bottomTab === tab ? tab === 'brain' ? 'border-violet-500 text-violet-600' : 'border-gray-900 text-gray-900' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
                   {tab}
                   {tab === 'history' && tasks.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{tasks.length}</span>}
                   {tab === 'memory'  && memory.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{memory.length}</span>}
@@ -1322,6 +1323,13 @@ export default function RazDashboard() {
                     </button>
                   )
                 })}
+              </div>
+            )}
+
+            {/* Brain tab */}
+            {bottomTab === 'brain' && (
+              <div className="flex-1 overflow-hidden p-2">
+                <BrainView />
               </div>
             )}
           </div>
