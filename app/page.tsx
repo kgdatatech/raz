@@ -133,10 +133,10 @@ const ROLE_DEFAULT_WORKFLOW: Record<RoleId, string> = {
 }
 
 const ROLE_WORKFLOWS: Record<RoleId, string[]> = {
-  'RAZ-Dev':  ['feature', 'fix', 'refactor', 'test', 'strategy'],
+  'RAZ-Dev':  ['feature', 'fix', 'refactor', 'test', 'strategy', 'self'],
   'RAZ-Sec':  ['audit', 'strategy'],
   'RAZ-QA':   ['test', 'fix'],
-  'RAZ-Ops':  ['audit', 'strategy'],
+  'RAZ-Ops':  ['audit', 'strategy', 'self'],
   'RAZ-Data': ['feature', 'fix', 'refactor'],
 }
 
@@ -876,6 +876,30 @@ export default function RazDashboard() {
             )}
 
             <div className="border-t border-gray-100" />
+
+            {/* Self-improvement quick tasks */}
+            {selectedRepo?.local_path && (
+              <div className="border border-violet-100 rounded-lg overflow-hidden">
+                <div className="px-2.5 py-1.5 bg-violet-50 border-b border-violet-100 flex items-center justify-between">
+                  <span className="text-[9px] font-semibold text-violet-500 uppercase tracking-widest">Self-Improve</span>
+                  <span className="text-[8px] text-violet-300">RAZ audits itself</span>
+                </div>
+                <div className="divide-y divide-violet-50">
+                  {[
+                    { label: 'Full system audit', role: 'RAZ-Ops' as RoleId, workflow: 'self', desc: 'Audit the RAZ codebase (lib/agent-cc.ts, lib/mcp-server.ts, lib/db.ts, app/page.tsx) for gaps, bugs, and missing capabilities. Write a findings report with mcp__raz__generate_report. Then handoff to RAZ-Dev to implement the highest-priority improvement.' },
+                    { label: 'Write RAZ tests', role: 'RAZ-QA' as RoleId, workflow: 'test', desc: 'Examine lib/db.ts, lib/agent-cc.ts, lib/mcp-server.ts, and app/api/ routes. Write comprehensive tests for any untested functions — DB migrations, config functions, API routes. Use Vitest. All tests must pass.' },
+                    { label: 'Improve system prompt', role: 'RAZ-Ops' as RoleId, workflow: 'self', desc: 'Read lib/agent-cc.ts buildSystemPrompt() function. Analyze the current system prompt for gaps in agent instructions. Propose and implement improvements to the MANDATORY PHASE ORDER, tool descriptions, and quality rules. Ask user before editing agent-cc.ts core loop.' },
+                    { label: 'Update AGENTS.md', role: 'RAZ-Ops' as RoleId, workflow: 'strategy', desc: 'Read all files in lib/ and app/api/ to understand every capability RAZ has. Update or create AGENTS.md documenting the full tech stack, all available MCP tools with descriptions, key environment variables, and any rules an agent must follow when working in this repo.' },
+                  ].map((q) => (
+                    <button key={q.label} onClick={() => { setRole(q.role); setWorkflow(q.workflow); setTask(q.desc) }}
+                      className="w-full text-left px-2.5 py-2 hover:bg-violet-50 transition-colors">
+                      <span className="text-[9px] font-semibold text-violet-600">{q.label}</span>
+                      <p className="text-[8px] text-violet-400 mt-0.5 leading-snug line-clamp-1">{q.desc.slice(0, 60)}…</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* AGENTS.md scaffold shortcut */}
             {selectedRepo?.local_path && (
