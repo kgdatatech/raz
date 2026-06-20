@@ -210,6 +210,7 @@ function buildSystemPrompt(params: {
     audit:    'You are performing a security and code quality audit. Read widely, identify issues, write a detailed report, and fix what you can safely fix.',
     strategy: 'You are researching and strategizing. Read the codebase, understand the problem space, and produce a detailed written plan. You may create or update docs but should not make code changes.',
     test:     'You are writing or improving tests. Understand what exists, identify gaps, write comprehensive test cases, run them to confirm they pass.',
+    self:     'You are improving the RAZ agent system itself. Read lib/agent-cc.ts, lib/mcp-server.ts, lib/db.ts, and app/page.tsx thoroughly. Identify capability gaps, bugs, UX issues, and missing features. Use mcp__raz__generate_report for findings. For UI and API changes, implement directly. SAFETY GATE: before editing lib/agent-cc.ts, lib/mcp-server.ts, or lib/db.ts, call mcp__raz__ask_user to get explicit approval first.',
   }
 
   return `${roleContext}

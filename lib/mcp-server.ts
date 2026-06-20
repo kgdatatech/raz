@@ -75,7 +75,7 @@ server.tool(
     createQuestion(qId, TASK_ID, question, options, input_type ?? (options?.length ? 'choice' : 'text'))
 
     let waited = 0
-    while (waited < 300_000) {
+    while (waited < 900_000) {
       await checkPauseOrAbort()
       await new Promise((r) => setTimeout(r, 1_000))
       waited += 1_000
@@ -84,7 +84,7 @@ server.tool(
         return { content: [{ type: 'text' as const, text: `User answered: "${answer}"` }] }
       }
     }
-    return { content: [{ type: 'text' as const, text: 'No response received within 5 minutes. Use your best judgment to proceed, or call task_complete explaining the blocker.' }] }
+    return { content: [{ type: 'text' as const, text: 'No response received within 15 minutes. Use your best judgment to proceed, or call task_complete explaining the blocker.' }] }
   },
 )
 
@@ -202,13 +202,13 @@ server.tool(
 
     const resultPath = path.join(WORKTREE, '.raziel-delegate-result.json')
     let waited = 0
-    while (!fs.existsSync(resultPath) && waited < 300_000) {
+    while (!fs.existsSync(resultPath) && waited < 1_800_000) {
       await new Promise((r) => setTimeout(r, 500))
       waited += 500
     }
 
     if (!fs.existsSync(resultPath)) {
-      return { content: [{ type: 'text' as const, text: `DELEGATION TIMEOUT: ${role} did not respond within 5 minutes.` }] }
+      return { content: [{ type: 'text' as const, text: `DELEGATION TIMEOUT: ${role} did not respond within 30 minutes.` }] }
     }
 
     const result = JSON.parse(fs.readFileSync(resultPath, 'utf-8')) as { summary: string; failed: boolean }
