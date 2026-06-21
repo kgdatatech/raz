@@ -909,6 +909,9 @@ export default function RazDashboard() {
           )}
         </div>
         <div className="flex items-center gap-3">
+          <a href="/status" className="text-[9px] font-semibold text-gray-400 hover:text-gray-700 transition-colors">
+            Status
+          </a>
           {/* Mode toggle */}
           <div className="flex items-center rounded-md border border-gray-200 overflow-hidden">
             {([

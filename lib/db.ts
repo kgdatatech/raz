@@ -556,6 +556,148 @@ export function getAllConfig(): Record<string, string> {
   return Object.fromEntries(rows.map((r) => [r.key, r.value]))
 }
 
+// ─── Status Metrics ───────────────────────────────────────────────────────────
+
+export interface RoleMetric {
+  role:     string
+  complete: number
+  failed:   number
+  running:  number
+  queued:   number
+  total:    number
+}
+
+export interface WindowMetric {
+  complete: number
+  failed:   number
+  total:    number
+}
+
+export interface PrHealthMetric {
+  merged:      number
+  openPassing: number
+  openFailing: number
+  openPending: number
+}
+
+export interface RecentFailure {
+  id:          string
+  description: string
+  role:        string | null
+  error:       string | null
+  completedAt: string | null
+}
+
+export interface StatusMetrics {
+  running:          number
+  queued:           number
+  pendingQuestions: number
+  config:           Record<string, string>
+  byRole:           RoleMetric[]
+  last24h:          WindowMetric
+  last7d:           WindowMetric
+  prHealth:         PrHealthMetric
+  recentFailures:   RecentFailure[]
+  generatedAt:      string
+}
+
+export function getStatusMetrics(): StatusMetrics {
+  const running = (db.prepare(
+    `SELECT COUNT(*) as n FROM tasks WHERE status = 'running'`
+  ).get() as { n: number }).n
+
+  const queued = (db.prepare(
+    `SELECT COUNT(*) as n FROM tasks WHERE status = 'queued'`
+  ).get() as { n: number }).n
+
+  const pendingQuestions = (db.prepare(
+    `SELECT COUNT(*) as n FROM agent_questions WHERE answered_at IS NULL`
+  ).get() as { n: number }).n
+
+  const config = getAllConfig()
+
+  const roleRows = db.prepare(`
+    SELECT COALESCE(role, 'RAZ-Dev') as role, status, COUNT(*) as n
+    FROM tasks GROUP BY COALESCE(role, 'RAZ-Dev'), status
+  `).all() as { role: string; status: string; n: number }[]
+
+  const roleMap = new Map<string, RoleMetric>()
+  for (const r of roleRows) {
+    if (!roleMap.has(r.role)) {
+      roleMap.set(r.role, { role: r.role, complete: 0, failed: 0, running: 0, queued: 0, total: 0 })
+    }
+    const m = roleMap.get(r.role)!
+    if (r.status === 'complete')     m.complete = r.n
+    else if (r.status === 'failed')  m.failed   = r.n
+    else if (r.status === 'running') m.running  = r.n
+    else if (r.status === 'queued')  m.queued   = r.n
+    m.total += r.n
+  }
+  const byRole = Array.from(roleMap.values()).sort((a, b) => b.total - a.total)
+
+  const h24Rows = db.prepare(`
+    SELECT status, COUNT(*) as n FROM tasks
+    WHERE created_at >= datetime('now', '-1 day') GROUP BY status
+  `).all() as { status: string; n: number }[]
+  const last24h: WindowMetric = { complete: 0, failed: 0, total: 0 }
+  for (const r of h24Rows) {
+    if (r.status === 'complete')    last24h.complete = r.n
+    else if (r.status === 'failed') last24h.failed   = r.n
+    last24h.total += r.n
+  }
+
+  const d7Rows = db.prepare(`
+    SELECT status, COUNT(*) as n FROM tasks
+    WHERE created_at >= datetime('now', '-7 days') GROUP BY status
+  `).all() as { status: string; n: number }[]
+  const last7d: WindowMetric = { complete: 0, failed: 0, total: 0 }
+  for (const r of d7Rows) {
+    if (r.status === 'complete')    last7d.complete = r.n
+    else if (r.status === 'failed') last7d.failed   = r.n
+    last7d.total += r.n
+  }
+
+  const prRows = db.prepare(`
+    SELECT p.ci_status, p.state, p.merged
+    FROM pr_status p
+    INNER JOIN (
+      SELECT task_id, MAX(checked_at) AS latest FROM pr_status GROUP BY task_id
+    ) m ON p.task_id = m.task_id AND p.checked_at = m.latest
+  `).all() as { ci_status: string | null; state: string | null; merged: number }[]
+
+  const prHealth: PrHealthMetric = { merged: 0, openPassing: 0, openFailing: 0, openPending: 0 }
+  for (const p of prRows) {
+    if (p.merged) {
+      prHealth.merged++
+    } else {
+      const ci = (p.ci_status ?? '').toLowerCase()
+      if (ci === 'success' || ci === 'passing')                        prHealth.openPassing++
+      else if (ci === 'failure' || ci === 'failing' || ci === 'error') prHealth.openFailing++
+      else                                                             prHealth.openPending++
+    }
+  }
+
+  const recentFailures = db.prepare(`
+    SELECT id, description, COALESCE(role, 'RAZ-Dev') as role, error,
+           completed_at as completedAt
+    FROM tasks WHERE status = 'failed'
+    ORDER BY completed_at DESC LIMIT 10
+  `).all() as RecentFailure[]
+
+  return {
+    running,
+    queued,
+    pendingQuestions,
+    config,
+    byRole,
+    last24h,
+    last7d,
+    prHealth,
+    recentFailures,
+    generatedAt: new Date().toISOString(),
+  }
+}
+
 // Capture stale worktrees BEFORE marking as failed so agent-cc can clean them up on next start
 export const STALE_WORKTREES = db.prepare(`
   SELECT t.id, t.worktree_path, r.local_path AS repo_path
