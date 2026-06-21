@@ -7,6 +7,7 @@ import { TOOLS, executeTool, ToolName, ToolContext } from './tools'
 import {
   getMemory, listTasks, getIssue, saveTaskMessages,
   createQueuedTask, setTaskParent, createAgentMessage, updateAgentMessageResult,
+  getRecentChatContext,
 } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
 
@@ -27,6 +28,7 @@ export interface AgentTask {
   parentRole?:         string
   maxIterations?:      number
   existingWorktree?:   string  // when set, skip worktree creation (used by sub-agents)
+  baseBranch?:         string  // default branch name — worktrees branch from origin/<baseBranch>
 }
 
 export interface AgentEvent {
@@ -180,8 +182,9 @@ function buildSystemPrompt(params: {
   issueContent?: string
   isResume:      boolean
   parentRole?:   string
+  chatContext?:  string
 }): string {
-  const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume, parentRole } = params
+  const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume, parentRole, chatContext } = params
 
   const memoryBlock = Object.keys(memory).length > 0
     ? `\n\nREPO MEMORY (what you know about this codebase):\n${Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
@@ -201,6 +204,10 @@ function buildSystemPrompt(params: {
 
   const delegationBlock = parentRole
     ? `\n\n⚡ DELEGATED TASK: You were called by ${parentRole}. Complete your task and call task_complete with a clear summary — your findings will be returned to the parent agent as a tool result.`
+    : ''
+
+  const chatBlock = chatContext
+    ? `\n\n══════════════════════════════════════\nPRE-TASK CHAT CONTEXT\n══════════════════════════════════════\nThe following is a recent conversation between the user and RAZ Chat that preceded this task. Use it to understand intent, constraints, and background that may not be explicit in the task description.\n\n${chatContext}`
     : ''
 
   const workflowGuide: Record<string, string> = {
@@ -305,7 +312,7 @@ WHEN STUCK OR UNCERTAIN
 • If you hit an error after 3 attempts to fix it, stop and call task_complete with a "blocked" explanation
 • Never loop endlessly — if you are going in circles, explain why and stop
 
-${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}${resumeBlock}${delegationBlock}`
+${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}${chatBlock}${resumeBlock}${delegationBlock}`
 }
 
 // ── Main agent loop ───────────────────────────────────────────────────────────
@@ -339,10 +346,13 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       if (cached) issueContent = `#${cached.number}: ${cached.title}\n\n${cached.body ?? ''}`
     }
 
+    const chatContext = repoId ? getRecentChatContext(repoId) : ''
+
     const systemPrompt = buildSystemPrompt({
       context, memory, pastTasks, workflow, isResume, parentRole,
       roleContext: roleDefinition.systemContext,
       issueContent,
+      chatContext: chatContext || undefined,
     })
 
     const roleTools = TOOLS.filter((t) => roleDefinition.allowedTools.includes(t.name))

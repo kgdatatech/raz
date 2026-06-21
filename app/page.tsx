@@ -115,6 +115,12 @@ interface LogEntry {
   ts:      number
 }
 
+interface ChatMsg {
+  role:      'user' | 'assistant' | 'tool'
+  content:   string
+  toolName?: string
+}
+
 const CC_MODE = process.env.NEXT_PUBLIC_RAZ_RUNNER === 'cc'
 
 const WORKFLOWS = [
@@ -386,7 +392,7 @@ export default function RazDashboard() {
   const [taskLog,         setTaskLog]         = useState<LogEntry[] | null>(null)
   const [taskLogLoading,  setTaskLogLoading]  = useState(false)
   const [planOpen,        setPlanOpen]        = useState(false)
-  const [bottomTab,       setBottomTab]       = useState<'history' | 'memory' | 'comms' | 'issues' | 'reports' | 'brain'>('history')
+  const [bottomTab,       setBottomTab]       = useState<'chat' | 'history' | 'memory' | 'comms' | 'issues' | 'reports' | 'brain'>('chat')
   const [brainFullscreen, setBrainFullscreen] = useState(false)
   const [memory,          setMemory]          = useState<MemoryRow[]>([])
   const [messages,        setMessages]        = useState<AgentMessageRow[]>([])
@@ -408,6 +414,9 @@ export default function RazDashboard() {
   const [isPaused,           setIsPaused]           = useState(false)
   const [showOptions,        setShowOptions]        = useState(false)
   const [showQuickTasks,     setShowQuickTasks]     = useState(false)
+  const [chatMessages,       setChatMessages]       = useState<ChatMsg[]>([])
+  const [chatInput,          setChatInput]          = useState('')
+  const [chatStreaming,      setChatStreaming]       = useState(false)
   const [dispatch,           setDispatch]           = useState<DispatchResult | null>(null)
   const [dispatchCountdown,  setDispatchCountdown]  = useState<number | null>(null)
   const [queueDepth,         setQueueDepth]         = useState(0)
@@ -416,6 +425,8 @@ export default function RazDashboard() {
 
   const logRef         = useRef<HTMLDivElement>(null)
   const abortRef       = useRef<AbortController | null>(null)
+  const chatEndRef     = useRef<HTMLDivElement>(null)
+  const chatAbortRef   = useRef<AbortController | null>(null)
   const startRef       = useRef<number>(0)
   const timerRef       = useRef<ReturnType<typeof setInterval> | null>(null)
   const queueRef       = useRef<QueueItem[]>([])
@@ -423,6 +434,10 @@ export default function RazDashboard() {
   const [panelH,       setPanelH]       = useState(224)
 
   useEffect(() => { queueRef.current = queue }, [queue])
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages, chatStreaming])
 
   useEffect(() => {
     fetch('/api/repos')
@@ -454,6 +469,7 @@ export default function RazDashboard() {
     loadMessages(selectedRepo.id)
     loadAllIssues(selectedRepo.id, 'open')
     loadReports()
+    loadChatHistory(selectedRepo.id)
   }, [selectedRepo])
 
   useEffect(() => {
@@ -495,6 +511,99 @@ export default function RazDashboard() {
 
   function loadMessages(repoId: number) {
     fetch(`/api/messages?repoId=${repoId}`).then((r) => r.json()).then(setMessages).catch(() => {})
+  }
+
+  function loadChatHistory(repoId: number) {
+    fetch(`/api/chat/messages?repoId=${repoId}`)
+      .then((r) => r.json())
+      .then(({ messages: rows }: { messages: { role: string; content: string }[] }) => {
+        setChatMessages(rows.map((r) => ({ role: r.role as 'user' | 'assistant', content: r.content })))
+      })
+      .catch(() => {})
+  }
+
+  function extractChatTask(content: string): void {
+    const taskMatch = content.match(/\*\*Suggested task:\*\*\s*([^\n]+)/i)
+    const roleMatch = content.match(/\*\*Role:\*\*\s*(RAZ-\w+)/i)
+    const wfMatch   = content.match(/\*\*Workflow:\*\*\s*(\w+)/i)
+    if (taskMatch) setTask(taskMatch[1].trim())
+    if (roleMatch && ROLE_IDS.includes(roleMatch[1] as RoleId)) setRole(roleMatch[1] as RoleId)
+    if (wfMatch) setWorkflow(wfMatch[1].trim().toLowerCase())
+  }
+
+  async function sendChatMessage(): Promise<void> {
+    const text = chatInput.trim()
+    if (!text || chatStreaming) return
+
+    const userMsg: ChatMsg = { role: 'user', content: text }
+    const apiMessages = [...chatMessages, userMsg]
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+
+    setChatMessages((prev) => [...prev, userMsg])
+    setChatInput('')
+    setChatStreaming(true)
+
+    const controller = new AbortController()
+    chatAbortRef.current = controller
+
+    try {
+      const res = await fetch('/api/chat', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ repoId: selectedRepo?.id ?? null, messages: apiMessages }),
+        signal:  controller.signal,
+      })
+
+      if (!res.body) throw new Error('No response body')
+
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer    = ''
+      let pending   = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() ?? ''
+
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data: ')) continue
+          try {
+            const evt = JSON.parse(line.slice(6)) as Record<string, unknown>
+            if (evt.type === 'text') {
+              pending = evt.text as string
+            } else if (evt.type === 'tool_call') {
+              const inp    = evt.input as Record<string, unknown>
+              const detail = Object.values(inp)[0]
+              const chip   = typeof detail === 'string' ? detail.slice(0, 60) : JSON.stringify(inp).slice(0, 60)
+              setChatMessages((prev) => [...prev, { role: 'tool', content: chip, toolName: evt.name as string }])
+            } else if (evt.type === 'done') {
+              if (pending) {
+                setChatMessages((prev) => [...prev, { role: 'assistant', content: pending }])
+                pending = ''
+              }
+            } else if (evt.type === 'error') {
+              setChatMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${evt.message as string}` }])
+            }
+          } catch {}
+        }
+      }
+
+      if (pending) {
+        setChatMessages((prev) => [...prev, { role: 'assistant', content: pending }])
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setChatMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${String(err)}` }])
+      }
+    } finally {
+      setChatStreaming(false)
+      chatAbortRef.current = null
+    }
   }
 
   function loadAllIssues(repoId: number, state: 'open' | 'closed') {
@@ -1360,15 +1469,16 @@ export default function RazDashboard() {
               <div className="w-8 h-0.5 rounded-full bg-gray-300 group-hover:bg-indigo-400 transition-colors" />
             </div>
             <div className="h-9 flex-shrink-0 bg-white border-b border-gray-200 flex items-center">
-              {(['history', 'memory', 'comms', 'issues', 'reports', 'brain'] as const).map((tab) => (
+              {(['chat', 'history', 'memory', 'comms', 'issues', 'reports', 'brain'] as const).map((tab) => (
                 <button key={tab} onClick={() => {
                   setBottomTab(tab)
+                  if (tab === 'chat'    && selectedRepo) loadChatHistory(selectedRepo.id)
                   if (tab === 'memory'  && selectedRepo) loadMemory(selectedRepo.id)
                   if (tab === 'comms'   && selectedRepo) loadMessages(selectedRepo.id)
                   if (tab === 'issues'  && selectedRepo) loadAllIssues(selectedRepo.id, issueFilter)
                   if (tab === 'reports') loadReports()
                 }}
-                  className={`h-full px-4 text-[9px] font-semibold uppercase tracking-widest border-b-2 transition-colors capitalize ${bottomTab === tab ? tab === 'brain' ? 'border-violet-500 text-violet-600' : 'border-gray-900 text-gray-900' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
+                  className={`h-full px-4 text-[9px] font-semibold uppercase tracking-widest border-b-2 transition-colors capitalize ${bottomTab === tab ? tab === 'brain' ? 'border-violet-500 text-violet-600' : tab === 'chat' ? 'border-indigo-500 text-indigo-600' : 'border-gray-900 text-gray-900' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
                   {tab}
                   {tab === 'history' && tasks.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{tasks.length}</span>}
                   {tab === 'memory'  && memory.length > 0 && <span className="ml-1.5 text-[8px] text-gray-400">{memory.length}</span>}
@@ -1562,6 +1672,109 @@ export default function RazDashboard() {
             {bottomTab === 'brain' && (
               <div className="flex-1 overflow-hidden p-2">
                 <BrainView onExpand={() => setBrainFullscreen(true)} />
+              </div>
+            )}
+
+            {/* Chat tab */}
+            {bottomTab === 'chat' && (
+              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+                {/* Messages */}
+                <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+                  {chatMessages.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center gap-2 text-center py-8">
+                      <span className="text-xl text-indigo-300">◈</span>
+                      <p className="text-xs font-semibold text-gray-700">RAZ Chat</p>
+                      <p className="text-[10px] text-gray-400 max-w-xs leading-relaxed">Ask about your codebase, plan tasks, explore options. I can read files and search code — no worktrees or PRs.</p>
+                      {!selectedRepo && <p className="text-[10px] text-amber-500 mt-1">Select a repo to enable codebase search.</p>}
+                    </div>
+                  ) : chatMessages.map((msg, i) => {
+                    if (msg.role === 'tool') {
+                      return (
+                        <div key={i} className="flex items-center gap-1.5 pl-1">
+                          <span className="text-[8px] font-mono font-semibold text-blue-500 bg-blue-50 border border-blue-100 rounded px-1.5 py-0.5 flex-shrink-0">{msg.toolName}</span>
+                          <span className="text-[9px] text-gray-400 font-mono truncate">{msg.content}</span>
+                        </div>
+                      )
+                    }
+                    const isUser       = msg.role === 'user'
+                    const hasSuggested = !isUser && /\*\*Suggested task:\*\*/i.test(msg.content)
+                    return (
+                      <div key={i} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] rounded-xl px-3 py-2.5 ${isUser ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-800'}`}>
+                          {isUser ? (
+                            <p className="text-[11px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                          ) : (
+                            <div className="text-[11px] leading-relaxed">
+                              <Markdown text={msg.content} />
+                            </div>
+                          )}
+                          {hasSuggested && (
+                            <button
+                              onClick={() => extractChatTask(msg.content)}
+                              className="mt-2.5 w-full text-[9px] font-semibold px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+                            >
+                              → Create Task
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {chatStreaming && (
+                    <div className="flex justify-start">
+                      <div className="bg-gray-100 rounded-xl px-3.5 py-3">
+                        <div className="flex gap-1 items-center">
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+
+                {/* Input */}
+                <div className="flex-shrink-0 border-t border-gray-200 px-3 py-2 flex items-end gap-2">
+                  <textarea
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault()
+                        void sendChatMessage()
+                      }
+                    }}
+                    placeholder={selectedRepo ? `Ask about ${selectedRepo.github_repo}… (Ctrl+Enter to send)` : 'Ask anything… (Ctrl+Enter to send)'}
+                    rows={2}
+                    disabled={chatStreaming}
+                    className="flex-1 text-[11px] bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-indigo-400 placeholder-gray-300 disabled:opacity-50"
+                  />
+                  <div className="flex flex-col gap-1 flex-shrink-0">
+                    <button
+                      onClick={() => void sendChatMessage()}
+                      disabled={!chatInput.trim() || chatStreaming}
+                      className="px-3 py-2 text-[10px] font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+                    >
+                      {chatStreaming ? '…' : 'Send'}
+                    </button>
+                    {chatMessages.length > 0 && (
+                      <button
+                        onClick={() => {
+                          chatAbortRef.current?.abort()
+                          setChatMessages([])
+                          setChatStreaming(false)
+                          if (selectedRepo) {
+                            fetch(`/api/chat/messages?repoId=${selectedRepo.id}`, { method: 'DELETE' }).catch(() => {})
+                          }
+                        }}
+                        className="px-3 py-1 text-[9px] text-gray-400 hover:text-red-500 transition-colors text-center"
+                      >
+                        clear
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 

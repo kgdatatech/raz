@@ -66,7 +66,7 @@ raziel/
 │   ├── agent-cc.ts           # Claude Code CLI runner (RAZ_RUNNER=cc)
 │   ├── agent-sdk.ts          # Anthropic SDK runner (default)
 │   ├── mcp-server.ts         # MCP server started by agent-cc subprocess
-│   ├── db.ts                 # SQLite schema + all DB helpers (migrations v1–v9)
+│   ├── db.ts                 # SQLite schema + all DB helpers (migrations v1–v10)
 │   ├── roles.ts              # 5 role definitions, tool allowlists, system prompts
 │   ├── tools.ts              # Tool implementations (read_file, write_file, etc.)
 │   ├── dispatch.ts           # Smart intent detection (detectIntent)
@@ -84,16 +84,21 @@ raziel/
 ## Database & Migrations
 
 - **File:** `lib/db.ts`
-- **Current schema version:** 9 (stored in `PRAGMA user_version`)
+- **Current schema version:** 10 (stored in `PRAGMA user_version`)
 - **Migration pattern:** `if (VERSION < N) { db.exec(...); db.exec('PRAGMA user_version = N') }`
 - **WAL mode + FK enforcement:** Set on startup
 - **Startup safety:** Tasks stuck in `running` are auto-failed on server restart
 
+**Task statuses:** `running` | `queued` | `pending` | `complete` | `failed`
+- `pending` — handoff task created but waiting for parent's PR to merge before it can start.
+  `activateHandoffs(parentTaskId)` flips it to `queued` after merge.
+  The queue runner only picks up `queued` tasks, never `pending`.
+
 Adding a migration:
 ```ts
-if (VERSION < 10) {
+if (VERSION < 11) {
   db.exec(`ALTER TABLE tasks ADD COLUMN new_col TEXT`)
-  db.exec('PRAGMA user_version = 10')
+  db.exec('PRAGMA user_version = 11')
 }
 ```
 

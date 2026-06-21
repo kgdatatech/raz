@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { runAgent } from '@/lib/agent'
 import { pushBranchAndOpenPR, mergePR } from '@/lib/github'
-import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId, getConfig } from '@/lib/db'
+import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId, getConfig, activateHandoffs } from '@/lib/db'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from '@/lib/roles'
 
 export const runtime    = 'nodejs'
@@ -68,14 +68,16 @@ export async function POST(req: NextRequest) {
         try { controller.enqueue(encoder.encode(': keepalive\n\n')) } catch {}
       }, 25_000)
 
-      // Sync local base branch with remote before creating worktree.
-      // Prevents stale-base conflicts when PRs have merged on GitHub since the last sync.
+      // Fetch from remote so origin/<baseBranch> is current.
+      // We intentionally do NOT merge into the local working tree here —
+      // merging would modify tracked files and trigger Next.js HMR, restarting the
+      // dev server and killing this SSE stream. Worktrees branch from origin/<baseBranch>
+      // directly, so they always get the latest code without touching the main tree.
       try {
         execSync(`git fetch origin`, { cwd: repoPath, stdio: 'pipe' })
-        execSync(`git merge --ff-only origin/${baseBranch}`, { cwd: repoPath, stdio: 'pipe' })
-        send({ type: 'thinking', message: `Synced local ${baseBranch} with origin` })
+        send({ type: 'thinking', message: `Fetched origin/${baseBranch}` })
       } catch {
-        send({ type: 'thinking', message: `Warning: could not sync ${baseBranch} with origin — proceeding with current local state` })
+        send({ type: 'thinking', message: `Warning: could not fetch from origin — proceeding with cached state` })
       }
 
       // Buffer log entries — skip heavy tool_result bodies to keep size manageable
@@ -96,6 +98,7 @@ export async function POST(req: NextRequest) {
             issueNumber,
             github:             { owner, repo },
             checkpointMessages: checkpointMessages ?? undefined,
+            baseBranch,
           },
           (event) => {
             send(event)
@@ -139,6 +142,7 @@ export async function POST(req: NextRequest) {
             // Read-only task (audit/strategy) — no commits, no PR needed
             const summary = String(completionData.summary ?? description)
             completeTask(taskId, null, summary, [])
+            activateHandoffs(taskId)
             send({ type: 'complete', message: 'Assessment complete. No code changes — PR skipped.', data: { branch, taskId } })
           } else {
           send({ type: 'thinking', message: 'Opening pull request...' })
@@ -174,8 +178,10 @@ export async function POST(req: NextRequest) {
             completeTask(taskId, prUrl, summary, files)
             send({ type: 'complete', message: 'PR opened.', data: { prUrl, branch, taskId } })
 
-            // In Autonomous mode: auto-merge the PR and sync local master so the
-            // next queued task always branches from the latest state.
+            // In Autonomous mode: auto-merge the PR, fetch origin so origin/<baseBranch>
+            // is current, then activate pending handoff tasks. Handoffs were created as
+            // 'pending' during the agent run — activating them here ensures follow-on
+            // agents branch from origin/<baseBranch> AFTER the merge, not before.
             const razMode = getConfig('raz_mode') ?? 'directed'
             if (razMode === 'autonomous') {
               const prNumber = parseInt(prUrl.split('/').pop() ?? '0', 10)
@@ -183,13 +189,13 @@ export async function POST(req: NextRequest) {
                 try {
                   await mergePR(owner, repo, prNumber)
                   execSync(`git fetch origin`, { cwd: repoPath, stdio: 'pipe' })
-                  execSync(`git merge --ff-only origin/${baseBranch}`, { cwd: repoPath, stdio: 'pipe' })
-                  send({ type: 'thinking', message: `Auto-merged PR #${prNumber} and synced local ${baseBranch}` })
+                  send({ type: 'thinking', message: `Auto-merged PR #${prNumber} — origin/${baseBranch} synced` })
                 } catch (mergeErr) {
                   send({ type: 'thinking', message: `PR #${prNumber} opened but auto-merge failed: ${mergeErr}` })
                 }
               }
             }
+            activateHandoffs(taskId)
           } catch (e) {
             failTask(taskId, `PR failed: ${e}`)
             send({ type: 'error', message: `Task complete but PR failed: ${e}` })
@@ -197,6 +203,7 @@ export async function POST(req: NextRequest) {
           } // end commitsAhead > 0
         } else if (completionData?.commit_skipped) {
           completeTask(taskId, null, String(completionData.summary ?? ''), [])
+          activateHandoffs(taskId)
         } else {
           // Agent emitted an error event and returned without completing — mark DB
           failTask(taskId, 'Agent did not reach task_complete')
