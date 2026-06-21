@@ -182,6 +182,34 @@ These rules keep token usage low. Violating them wastes budget and degrades mult
 
 ---
 
+## Testing Standard
+
+**Every new feature shipped to RAZ must include tests.** This is non-negotiable — it is part of what "done" means.
+
+### What to test
+
+| Feature type | What to cover |
+|---|---|
+| New DB helper | Value caps, FK cleanup, edge cases (empty, boundary, staleness) — use in-memory SQLite (`:memory:`) |
+| New queue routing logic | Each routing branch (all `if/else` arms), export the handler so it can be unit-tested via `vi.mock` |
+| New tool (tools.ts) | Schema completeness: name, description, `input_schema.type`, `required` fields — add to `tools-schema.test.ts` |
+| New role permission | Allowed tools present, write-only tools blocked for read-only roles — add to `roles.test.ts` |
+| New pure function | All branches covered, edge cases (empty input, max boundary, no-op path) |
+
+### Rules
+
+- Tests live in `lib/__tests__/` (or `app/api/<route>/__tests__/` for route handlers).
+- Use `vi.hoisted(() => { process.env['RAZ_DB_PATH'] = ':memory:' })` at the top of any test that touches the DB.
+- Never hit real GitHub API, real filesystem, or real Anthropic API in tests — mock with `vi.mock`.
+- Every `describe` block that touches the DB must have a `beforeEach` that deletes **all** child tables before `repos` (FK order: `memory`, `chat_messages`, `tasks`, then `repos`).
+- Run `npm test` before pushing. All tests must pass — no skips, no `only`.
+
+### When a PR lands without tests
+
+RAZ-QA's pre-merge `review` workflow must `request_changes` citing missing tests. The PR does not merge until tests are added.
+
+---
+
 ## Critical Rules
 
 ### TypeScript
