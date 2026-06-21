@@ -1,17 +1,80 @@
 import { execSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import {
-  getConfig, getNextQueuedTask, getRepoById,
+  getConfig, getNextQueuedTask, getRepoById, getTask,
   resetTaskToRunning, completeTask, failTask, saveTaskLog, activateHandoffs,
   hasRunningDuplicate, hasRecentCompletion, createQueuedTask,
+  type TaskRow, type RepoRow,
 } from './db'
 import { runAgent } from './agent'
-import { pushBranchAndOpenPR, mergePR } from './github'
+import { pushBranchAndOpenPR, mergePR, getPRStatus } from './github'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from './roles'
 
 let isProcessing = false
 let started      = false
 
+// ── Pre-merge gate ────────────────────────────────────────────────────────────
+// Called after a workflow='review' task completes. Checks the GitHub PR verdict
+// and either merges the PR (approved) or queues a RAZ-Dev fix (changes requested).
+async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<void> {
+  if (task.workflow !== 'review' || !task.parent_task_id) return
+
+  const parentTask = getTask(task.parent_task_id)
+  if (!parentTask?.pr_url) return
+
+  const match = parentTask.pr_url.match(/\/pull\/(\d+)/)
+  const prNumber = match ? parseInt(match[1]) : 0
+  if (!prNumber) return
+
+  const status = await getPRStatus(repo.github_owner, repo.github_repo, prNumber)
+
+  if (status.merged) {
+    // User already merged manually — activate dev task's handoffs and move on
+    activateHandoffs(parentTask.id)
+    return
+  }
+
+  if (status.state === 'closed') {
+    // PR was closed without merging — nothing to do
+    return
+  }
+
+  if (status.approvals > 0 && status.rejections === 0) {
+    // Approved — merge, activate parent handoffs, queue post-merge audit
+    await mergePR(repo.github_owner, repo.github_repo, prNumber)
+    try { execSync(`git fetch origin`, { cwd: repo.local_path!, stdio: 'pipe' }) } catch {}
+
+    activateHandoffs(parentTask.id)
+
+    const auditId = randomUUID()
+    createQueuedTask(
+      auditId,
+      repo.id,
+      `Post-merge audit: PR #${prNumber} (${parentTask.role ?? 'RAZ-Dev'}) — ${parentTask.description.slice(0, 50)}`,
+      `razqa/audit-${prNumber}-${auditId.slice(0, 6)}`,
+      'audit',
+      'RAZ-QA',
+      task.id,
+      'queued',
+    )
+  } else {
+    // Changes requested or no approval verdict — queue RAZ-Dev fix task
+    const fixId  = randomUUID()
+    const reason = task.summary?.slice(0, 200) ?? 'Review requested changes — see GitHub PR for details.'
+    createQueuedTask(
+      fixId,
+      repo.id,
+      `Fix PR #${prNumber} review feedback: ${reason}`,
+      `raz-dev/fix-pr${prNumber}-${fixId.slice(0, 6)}`,
+      'fix',
+      'RAZ-Dev',
+      task.id,
+      'queued',
+    )
+  }
+}
+
+// ── Main queue loop ───────────────────────────────────────────────────────────
 async function processQueue(): Promise<void> {
   if (isProcessing) return
 
@@ -90,7 +153,9 @@ async function processQueue(): Promise<void> {
       const files   = (completionData.files_changed as string[]) ?? []
 
       if (commitsAhead === 0) {
+        // No code changes — complete immediately and activate any handoffs
         completeTask(task.id, null, summary, [])
+        await handleReviewGate(task, repo)
         activateHandoffs(task.id)
         return
       }
@@ -119,25 +184,29 @@ async function processQueue(): Promise<void> {
 
       const prNumber = parseInt(prUrl.split('/').pop() ?? '0', 10)
       if (prNumber) {
-        await mergePR(repo.github_owner, repo.github_repo, prNumber)
-        try { execSync(`git fetch origin`, { cwd: repo.local_path, stdio: 'pipe' }) } catch {}
-
-        // Auto-queue RAZ-QA code review for every merged PR
-        const reviewId = randomUUID()
-        createQueuedTask(
-          reviewId,
-          repo.id,
-          `Code review: PR #${prNumber} (${task.role ?? 'RAZ-Dev'}) — ${task.description.slice(0, 60)}`,
-          `razqa/review-${prNumber}-${reviewId.slice(0, 6)}`,
-          'audit',
-          'RAZ-QA',
-          task.id,
-          'queued',
-        )
+        if (task.workflow === 'review') {
+          // This task was itself a review — shouldn't have commits, but handle gracefully
+          await handleReviewGate(task, repo)
+        } else {
+          // Normal dev task — queue pre-merge review instead of merging immediately
+          const reviewId = randomUUID()
+          createQueuedTask(
+            reviewId,
+            repo.id,
+            `Pre-merge review: PR #${prNumber} — ${task.description.slice(0, 60)}`,
+            `razqa/pre-merge-${prNumber}-${reviewId.slice(0, 6)}`,
+            'review',
+            'RAZ-QA',
+            task.id,
+            'queued',
+          )
+          // Handoffs activate after the review passes and the PR merges (see handleReviewGate)
+        }
       }
-      activateHandoffs(task.id)
     } else if (completionData?.commit_skipped) {
-      completeTask(task.id, null, String(completionData.summary ?? ''), [])
+      const summary = String(completionData.summary ?? '')
+      completeTask(task.id, null, summary, [])
+      await handleReviewGate(task, repo)
       activateHandoffs(task.id)
     } else {
       failTask(task.id, 'Agent did not reach task_complete')
