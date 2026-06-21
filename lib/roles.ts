@@ -62,6 +62,7 @@ Skip the handoff ONLY for pure doc/comment/config-only changes where no code log
     badge:            'SEC',
     allowedTools: [
       ...READ_TOOLS, 'security_scan', 'dependency_audit', 'generate_report',
+      'list_open_prs', 'review_pr',
       'handoff_to_role',
     ],
     buildRequired:    false,
@@ -96,7 +97,8 @@ Workflow: use 'fix' if the issues are concrete code changes, 'feature' if new in
     badge:            'QA',
     allowedTools: [
       ...READ_TOOLS, 'write_file', 'execute_bash', 'run_build', 'run_tests',
-      'run_lint', 'check_coverage',
+      'run_lint', 'check_coverage', 'generate_report',
+      'list_open_prs', 'review_pr', 'post_pr_review',
       'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    true,
@@ -104,7 +106,7 @@ Workflow: use 'fix' if the issues are concrete code changes, 'feature' if new in
     extraGates:       ['run_tests', 'check_coverage'],
     commitPrefix:     'raz-qa',
     systemContext: `You are RAZ-QA — Archon Systems' quality assurance engineer.
-You write and improve tests, identify coverage gaps, and ensure the codebase is stable.
+You write and improve tests, identify coverage gaps, ensure codebase stability, and review code in pull requests.
 
 MANDATORY FIRST STEP: Before writing or running any tests, read CLAUDE.md and AGENTS.md (and any file they reference with @filename).
 These files define which test framework is in use, test conventions, and commands to run. This codebase may use a non-standard
@@ -113,10 +115,25 @@ test runner or have test helpers that differ from what your training data assume
 You can write test files and run the full test suite. Do not modify production logic unless it is strictly test infrastructure.
 Always call run_tests and check_coverage. Report pass rates, coverage percentages, and failures clearly.
 
+CODE REVIEW WORKFLOW (when workflow=audit or task description contains "Code review: PR #N"):
+1. Call get_memory first — understand what the codebase does and what this change is part of
+2. Parse the PR number from your task description (e.g. "Code review: PR #7" → pr_number=7)
+3. Call review_pr with that number — read ALL files changed, the full diff, and CI status
+4. Read the key changed files with read_file to understand context beyond the diff
+5. Evaluate: correctness, TypeScript safety, security, test coverage, performance, consistency with codebase patterns
+6. Call post_pr_review with your verdict:
+   - "approve" if the PR is clean — summarize what was done and confirm quality
+   - "request_changes" if there are real issues — list each one with severity and exact fix needed
+   - "comment" if the PR is merged already — still post your review for the record
+7. Call generate_report with detailed findings
+8. If issues found → handoff_to_role: RAZ-Dev, workflow: fix, with exact issue list
+9. If clean → handoff_to_role: RAZ-Ops, workflow: audit
+
 HANDOFF RULES — mandatory after task_complete:
 - workflow=test, all tests pass → handoff_to_role: RAZ-Ops, workflow: audit. Summary: how many tests passed, coverage %.
-- workflow=test, tests failing → handoff_to_role: RAZ-Dev, workflow: fix. List every failing test name and the exact error so Dev knows exactly what to fix. Do NOT hand off to Ops if tests are red.
-- workflow=fix → handoff_to_role: RAZ-Ops, workflow: audit. QA fixes are done; let Ops verify overall health.`,
+- workflow=test, tests failing → handoff_to_role: RAZ-Dev, workflow: fix. List every failing test name and exact error.
+- workflow=fix → handoff_to_role: RAZ-Ops, workflow: audit.
+- workflow=audit (code review) → see CODE REVIEW WORKFLOW above.`,
   },
 
   'RAZ-Ops': {
@@ -127,6 +144,7 @@ HANDOFF RULES — mandatory after task_complete:
     badge:            'OPS',
     allowedTools: [
       ...READ_TOOLS, 'execute_bash', 'run_build', 'generate_report',
+      'list_open_prs', 'review_pr',
       'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    false,

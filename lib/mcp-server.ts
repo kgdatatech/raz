@@ -292,6 +292,79 @@ server.tool(
   },
 )
 
+// ── list_open_prs ─────────────────────────────────────────────────────────────
+server.tool(
+  'list_open_prs',
+  'List open pull requests for the current repo.',
+  {},
+  async () => {
+    const { listOpenPRs } = await import('./github')
+    const text = await listOpenPRs(GITHUB_OWNER, GITHUB_REPO)
+    return { content: [{ type: 'text' as const, text }] }
+  },
+)
+
+// ── review_pr ─────────────────────────────────────────────────────────────────
+server.tool(
+  'review_pr',
+  'Fetch full context for a GitHub PR: metadata, file list, CI status, existing reviews, and the complete diff. Call this at the start of any code review task.',
+  { pr_number: z.number().describe('Pull request number to review') },
+  async ({ pr_number }) => {
+    await checkPauseOrAbort()
+    const { getPRDetails, getPRDiff } = await import('./github')
+    const [details, diff] = await Promise.all([
+      getPRDetails(GITHUB_OWNER, GITHUB_REPO, pr_number),
+      getPRDiff(GITHUB_OWNER, GITHUB_REPO, pr_number),
+    ])
+
+    const fileList = details.files
+      .map((f) => `  ${f.status.padEnd(8)} +${f.additions}/-${f.deletions}  ${f.filename}`)
+      .join('\n')
+
+    const comments = details.comments.length > 0
+      ? details.comments.map((c) => `  [${c.author}] ${c.body.slice(0, 200)}`).join('\n')
+      : '  (none)'
+
+    const text = [
+      `PR #${details.number}: ${details.title}`,
+      `State: ${details.state}${details.merged ? ' (merged)' : ''}  |  CI: ${details.ciStatus}  |  Approvals: ${details.approvals}`,
+      `Author: ${details.author}  |  Created: ${details.createdAt.slice(0, 10)}`,
+      ``,
+      `DESCRIPTION:`,
+      details.body?.slice(0, 800) ?? '(no description)',
+      ``,
+      `FILES CHANGED (${details.files.length}):`,
+      fileList,
+      ``,
+      `EXISTING COMMENTS:`,
+      comments,
+      ``,
+      `DIFF (capped at 40KB):`,
+      diff || '(diff not available — PR may already be merged)',
+    ].join('\n')
+
+    return { content: [{ type: 'text' as const, text }] }
+  },
+)
+
+// ── post_pr_review ────────────────────────────────────────────────────────────
+server.tool(
+  'post_pr_review',
+  'Post a code review to a GitHub PR. Use after reviewing with review_pr. Verdict: "approve", "comment", or "request_changes".',
+  {
+    pr_number: z.number().describe('Pull request number'),
+    body:      z.string().describe('Full review body in markdown — summarize findings, list issues with severity, note what is good'),
+    verdict:   z.enum(['approve', 'comment', 'request_changes']).describe('"approve" if code is clean, "request_changes" if issues must be fixed, "comment" for informational only'),
+  },
+  async ({ pr_number, body, verdict }) => {
+    await checkPauseOrAbort()
+    const eventMap = { approve: 'APPROVE', comment: 'COMMENT', request_changes: 'REQUEST_CHANGES' } as const
+    const { createPRReview } = await import('./github')
+    const url = await createPRReview(GITHUB_OWNER, GITHUB_REPO, pr_number, body, eventMap[verdict])
+    return { content: [{ type: 'text' as const, text: `Review posted (${verdict}): ${url}` }] }
+  },
+)
+
 // ── Start server ──────────────────────────────────────────────────────────────
 ;(async () => {
   const transport = new StdioServerTransport()

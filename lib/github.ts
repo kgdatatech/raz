@@ -171,3 +171,30 @@ export async function closePR(owner: string, repo: string, prNumber: number): Pr
 export async function reopenPR(owner: string, repo: string, prNumber: number): Promise<void> {
   await octokit.pulls.update({ owner, repo, pull_number: prNumber, state: 'open' })
 }
+
+export async function getPRDiff(owner: string, repo: string, prNumber: number): Promise<string> {
+  const res = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner, repo, pull_number: prNumber,
+    headers: { accept: 'application/vnd.github.v3.diff' },
+  })
+  return String(res.data).slice(0, 40_000)
+}
+
+export async function createPRReview(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  body: string,
+  event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT',
+): Promise<string> {
+  const res = await octokit.pulls.createReview({ owner, repo, pull_number: prNumber, body, event })
+  return res.data.html_url ?? 'Review posted.'
+}
+
+export async function listOpenPRs(owner: string, repo: string): Promise<string> {
+  const { data } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 20 })
+  if (data.length === 0) return 'No open pull requests.'
+  return data.map((pr) =>
+    `PR #${pr.number} [${pr.head.ref} → ${pr.base.ref}] "${pr.title}" by ${pr.user?.login ?? 'unknown'} (${pr.created_at.slice(0, 10)})`
+  ).join('\n')
+}
