@@ -166,6 +166,19 @@ if (VERSION < 10) {
   db.exec('PRAGMA user_version = 10')
 }
 
+if (VERSION < 11) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      repo_id    INTEGER REFERENCES repos(id),
+      role       TEXT NOT NULL,
+      content    TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `)
+  db.exec('PRAGMA user_version = 11')
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RepoRow {
@@ -271,12 +284,29 @@ export function createQueuedTask(
   workflow = 'feature',
   role = 'RAZ-Dev',
   parentTaskId?: string,
+  status: 'queued' | 'pending' = 'queued',
 ): TaskRow {
   db.prepare(`
     INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id)
-    VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
-  `).run(id, repoId, description, branch, workflow, role, parentTaskId ?? null)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, repoId, description, branch, workflow, role, status, parentTaskId ?? null)
   return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow
+}
+
+export function activateHandoffs(parentTaskId: string): void {
+  db.prepare(`UPDATE tasks SET status = 'queued' WHERE parent_task_id = ? AND status = 'pending'`).run(parentTaskId)
+}
+
+export function hasRunningDuplicate(repoId: number, description: string, excludeId: string): boolean {
+  return !!db.prepare(
+    `SELECT id FROM tasks WHERE repo_id = ? AND description = ? AND status = 'running' AND id != ? LIMIT 1`
+  ).get(repoId, description, excludeId)
+}
+
+export function hasRecentCompletion(repoId: number, description: string, withinMinutes = 15): boolean {
+  return !!db.prepare(
+    `SELECT id FROM tasks WHERE repo_id = ? AND description = ? AND status = 'complete' AND completed_at > datetime('now', '-${withinMinutes} minutes') LIMIT 1`
+  ).get(repoId, description)
 }
 
 export function savePlan(taskId: string, plan: string) {
@@ -539,6 +569,41 @@ export function getQuestionAnswer(id: string): string | null {
     `SELECT answer, answered_at FROM agent_questions WHERE id = ?`
   ).get(id) as { answer: string | null; answered_at: string | null } | undefined
   return row?.answered_at ? (row.answer ?? '') : null
+}
+
+// ─── Chat Messages ────────────────────────────────────────────────────────────
+
+export interface ChatMessageRow {
+  id:         number
+  repo_id:    number
+  role:       string
+  content:    string
+  created_at: string
+}
+
+export function saveChatMessage(repoId: number, role: 'user' | 'assistant', content: string): void {
+  db.prepare(`INSERT INTO chat_messages (repo_id, role, content) VALUES (?, ?, ?)`).run(repoId, role, content)
+}
+
+export function listChatMessages(repoId: number, limit = 100): ChatMessageRow[] {
+  return db.prepare(
+    `SELECT * FROM chat_messages WHERE repo_id = ? ORDER BY created_at ASC LIMIT ?`
+  ).all(repoId, limit) as ChatMessageRow[]
+}
+
+export function clearChatMessages(repoId: number): void {
+  db.prepare(`DELETE FROM chat_messages WHERE repo_id = ?`).run(repoId)
+}
+
+export function getRecentChatContext(repoId: number, limit = 12): string {
+  const msgs = db.prepare(
+    `SELECT role, content FROM chat_messages WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?`
+  ).all(repoId, limit) as { role: string; content: string }[]
+  if (msgs.length === 0) return ''
+  return msgs
+    .reverse()
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 600)}`)
+    .join('\n\n')
 }
 
 // ─── System Config ────────────────────────────────────────────────────────────

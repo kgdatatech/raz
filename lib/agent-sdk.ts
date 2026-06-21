@@ -7,6 +7,7 @@ import { TOOLS, executeTool, ToolName, ToolContext } from './tools'
 import {
   getMemory, listTasks, getIssue, saveTaskMessages,
   createQueuedTask, setTaskParent, createAgentMessage, updateAgentMessageResult,
+  getRecentChatContext,
 } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
 
@@ -27,6 +28,7 @@ export interface AgentTask {
   parentRole?:         string
   maxIterations?:      number
   existingWorktree?:   string  // when set, skip worktree creation (used by sub-agents)
+  baseBranch?:         string  // default branch name — worktrees branch from origin/<baseBranch>
 }
 
 export interface AgentEvent {
@@ -180,8 +182,9 @@ function buildSystemPrompt(params: {
   issueContent?: string
   isResume:      boolean
   parentRole?:   string
+  chatContext?:  string
 }): string {
-  const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume, parentRole } = params
+  const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume, parentRole, chatContext } = params
 
   const memoryBlock = Object.keys(memory).length > 0
     ? `\n\nREPO MEMORY (what you know about this codebase):\n${Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
@@ -203,6 +206,10 @@ function buildSystemPrompt(params: {
     ? `\n\n⚡ DELEGATED TASK: You were called by ${parentRole}. Complete your task and call task_complete with a clear summary — your findings will be returned to the parent agent as a tool result.`
     : ''
 
+  const chatBlock = chatContext
+    ? `\n\n══════════════════════════════════════\nPRE-TASK CHAT CONTEXT\n══════════════════════════════════════\nThe following is a recent conversation between the user and RAZ Chat that preceded this task. Use it to understand intent, constraints, and background that may not be explicit in the task description.\n\n${chatContext}`
+    : ''
+
   const workflowGuide: Record<string, string> = {
     feature:  'You are implementing a new feature. Plan it thoroughly. Write clean, typed code. No placeholders.',
     fix:      'You are fixing a bug. Diagnose root cause first. Write minimal, targeted changes. Add a test if a test suite exists.',
@@ -217,6 +224,8 @@ function buildSystemPrompt(params: {
 
 You work on real production codebases. You are methodical, thorough, and security-obsessed.
 You think before you act and always verify your work before declaring it complete.
+
+MEMORY-FIRST RULE: Call list_memory as your FIRST action every task. Use what prior agents discovered before reading any files. Only read files when memory is insufficient. This is mandatory — it prevents redundant work and saves tokens.
 
 ══════════════════════════════════════
 ARCHON SYSTEMS CONTEXT
@@ -305,7 +314,7 @@ WHEN STUCK OR UNCERTAIN
 • If you hit an error after 3 attempts to fix it, stop and call task_complete with a "blocked" explanation
 • Never loop endlessly — if you are going in circles, explain why and stop
 
-${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}${resumeBlock}${delegationBlock}`
+${context ? `══════════════════════════════════════\nPROJECT CONTEXT\n══════════════════════════════════════\n${context}` : ''}${memoryBlock}${historyBlock}${issueBlock}${chatBlock}${resumeBlock}${delegationBlock}`
 }
 
 // ── Main agent loop ───────────────────────────────────────────────────────────
@@ -339,10 +348,13 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       if (cached) issueContent = `#${cached.number}: ${cached.title}\n\n${cached.body ?? ''}`
     }
 
+    const chatContext = repoId ? getRecentChatContext(repoId) : ''
+
     const systemPrompt = buildSystemPrompt({
       context, memory, pastTasks, workflow, isResume, parentRole,
       roleContext: roleDefinition.systemContext,
       issueContent,
+      chatContext: chatContext || undefined,
     })
 
     const roleTools = TOOLS.filter((t) => roleDefinition.allowedTools.includes(t.name))
@@ -473,12 +485,20 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     let buildVerified   = false
     let securityClean   = false
     const extraGatesMet = new Map<string, boolean>(roleDefinition.extraGates.map((g) => [g, false]))
-    let totalInputTokens  = 0
-    let totalOutputTokens = 0
+    let totalInputTokens        = 0
+    let totalOutputTokens       = 0
+    let totalCacheReadTokens    = 0
+    let totalCacheCreationTokens = 0
     const recentCalls: string[] = []
 
-    const INPUT_COST_PER_M  = 3.00
-    const OUTPUT_COST_PER_M = 15.00
+    const INPUT_COST_PER_M         = 3.00
+    const OUTPUT_COST_PER_M        = 15.00
+    const CACHE_READ_COST_PER_M    = 0.30
+    const CACHE_WRITE_COST_PER_M   = 3.75
+
+    const systemBlock: Anthropic.TextBlockParam[] = [
+      { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+    ]
 
     while (iterations < maxIterations) {
       iterations++
@@ -489,7 +509,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         () => anthropic.messages.create({
           model:      'claude-sonnet-4-6',
           max_tokens: 8096,
-          system:     systemPrompt,
+          system:     systemBlock,
           tools:      roleTools as unknown as Anthropic.Tool[],
           messages,
         }),
@@ -503,11 +523,18 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       const toolUses   = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
       const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text')
 
-      totalInputTokens  += response.usage.input_tokens
-      totalOutputTokens += response.usage.output_tokens
-      const costUsd = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
+      const usage = response.usage as Anthropic.Usage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+      totalInputTokens         += usage.input_tokens
+      totalOutputTokens        += usage.output_tokens
+      totalCacheReadTokens     += usage.cache_read_input_tokens    ?? 0
+      totalCacheCreationTokens += usage.cache_creation_input_tokens ?? 0
 
-      onEvent({ type: 'usage', message: `~$${costUsd.toFixed(4)}`, data: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, costUsd } })
+      const costUsd = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M
+        + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
+        + (totalCacheReadTokens / 1_000_000) * CACHE_READ_COST_PER_M
+        + (totalCacheCreationTokens / 1_000_000) * CACHE_WRITE_COST_PER_M
+
+      onEvent({ type: 'usage', message: `~$${costUsd.toFixed(4)}`, data: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheReadTokens: totalCacheReadTokens, costUsd } })
 
       if (textBlocks.length > 0) {
         onEvent({ type: 'thinking', message: textBlocks.map((b) => b.text).join('\n') })

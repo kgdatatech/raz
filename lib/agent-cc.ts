@@ -9,6 +9,7 @@ import {
   createQueuedTask, setTaskParent, createAgentMessage, updateAgentMessageResult,
   saveSessionId, getSessionId, getPendingQuestions,
   saveWorktreePath, clearWorktreePath, STALE_WORKTREES,
+  getRecentChatContext,
 } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
 import type { AgentTask, AgentEvent, EventCallback } from './agent-sdk'
@@ -31,7 +32,7 @@ function toUncPath(distro: string, linuxPath: string): string {
 }
 
 // ── Worktree ──────────────────────────────────────────────────────────────────
-function setupWorktree(repoPath: string, branch: string): string {
+function setupWorktree(repoPath: string, branch: string, baseBranch = 'master'): string {
   const slug = `.raziel-wt-${branch.replace(/\//g, '-').slice(0, 40)}`
 
   if (isWslPath(repoPath)) {
@@ -43,7 +44,7 @@ function setupWorktree(repoPath: string, branch: string): string {
       execSync(`wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree remove --force ${JSON.stringify(linuxWt)}`, { stdio: 'pipe' })
     } catch {}
     try {
-      execSync(`wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree add -b ${JSON.stringify(branch)} ${JSON.stringify(linuxWt)}`, { stdio: 'pipe' })
+      execSync(`wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree add -b ${JSON.stringify(branch)} ${JSON.stringify(linuxWt)} origin/${baseBranch}`, { stdio: 'pipe' })
     } catch {
       try {
         execSync(`wsl -d ${distro} -- git -C ${JSON.stringify(linuxRepo)} worktree add ${JSON.stringify(linuxWt)} ${JSON.stringify(branch)}`, { stdio: 'pipe' })
@@ -51,6 +52,12 @@ function setupWorktree(repoPath: string, branch: string): string {
         throw new Error(`Failed to create worktree: ${e2}`)
       }
     }
+    // Symlink node_modules from main repo so agents never need to npm install
+    try {
+      const linuxMainNm = `${linuxRepo}/node_modules`
+      const linuxWtNm   = `${linuxWt}/node_modules`
+      execSync(`wsl -d ${distro} -- bash -c "[ ! -e ${JSON.stringify(linuxWtNm)} ] && ln -s ${JSON.stringify(linuxMainNm)} ${JSON.stringify(linuxWtNm)} || true"`, { stdio: 'pipe' })
+    } catch {}
     return toUncPath(distro, linuxWt)
   }
 
@@ -59,10 +66,27 @@ function setupWorktree(repoPath: string, branch: string): string {
     try { execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' }) } catch {}
   }
   try {
-    execSync(`git worktree add -b "${branch}" "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
+    // Preferred: create branch from origin/<baseBranch> so agent sees post-merge state.
+    execSync(`git worktree add -b "${branch}" "${worktreePath}" "origin/${baseBranch}"`, { cwd: repoPath, stdio: 'pipe' })
   } catch {
-    execSync(`git worktree add "${worktreePath}" "${branch}"`, { cwd: repoPath, stdio: 'pipe' })
+    try {
+      // Fallback A: origin ref not available — create from local HEAD.
+      execSync(`git worktree add -b "${branch}" "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
+    } catch {
+      // Fallback B: branch already exists locally — check it out instead.
+      execSync(`git worktree add "${worktreePath}" "${branch}"`, { cwd: repoPath, stdio: 'pipe' })
+    }
   }
+
+  // Junction-link node_modules from main repo so agents never need to npm install.
+  // Uses junction type (no elevation required on Windows) — git worktree remove will
+  // delete the junction reparse point without touching the main node_modules target.
+  const mainNm = path.join(repoPath, 'node_modules')
+  const wtNm   = path.join(worktreePath, 'node_modules')
+  if (fs.existsSync(mainNm) && !fs.existsSync(wtNm)) {
+    try { fs.symlinkSync(mainNm, wtNm, 'junction') } catch {}
+  }
+
   return worktreePath
 }
 
@@ -72,6 +96,15 @@ function cleanupWorktree(repoPath: string, worktreePath: string) {
       const distro = wslDistro(repoPath)
       execSync(`wsl -d ${distro} -- git -C ${JSON.stringify(toLinuxPath(repoPath))} worktree remove --force ${JSON.stringify(toLinuxPath(worktreePath))}`, { stdio: 'pipe' })
     } else {
+      // Remove the node_modules junction before git removes the worktree.
+      // 'git worktree remove --force' uses recursive deletion on Windows and could follow
+      // the junction into the main repo's node_modules — rmdir removes only the junction point.
+      const nmJunction = path.join(worktreePath, 'node_modules')
+      try {
+        if (fs.existsSync(nmJunction) && fs.lstatSync(nmJunction).isSymbolicLink()) {
+          fs.rmdirSync(nmJunction)
+        }
+      } catch {}
       execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, stdio: 'pipe' })
     }
   } catch {}
@@ -115,8 +148,9 @@ function buildSystemPrompt(params: {
   roleContext:  string
   issueContent?: string
   parentRole?:  string
+  chatContext?:  string
 }): string {
-  const { workflow, roleContext, issueContent, parentRole } = params
+  const { workflow, roleContext, issueContent, parentRole, chatContext } = params
 
   // Memory and history are loaded via mcp__raz__get_memory at runtime — not injected here
   // This keeps the --system-prompt arg small regardless of how much memory accumulates
@@ -125,6 +159,7 @@ function buildSystemPrompt(params: {
 
   const issueBlock      = issueContent ? `\n\nLINKED GITHUB ISSUE:\n${issueContent}` : ''
   const delegationBlock = parentRole   ? `\n\n⚡ DELEGATED TASK: You were called by ${parentRole}. Complete your task and call mcp__raz__task_complete with a clear summary.` : ''
+  const chatBlock       = chatContext  ? `\n\n══════════════════════════════════════\nPRE-TASK CHAT CONTEXT\n══════════════════════════════════════\nRecent conversation with the user before this task was dispatched. Use it to understand intent and background.\n\n${chatContext}` : ''
 
   const workflowGuide: Record<string, string> = {
     feature:  'You are implementing a new feature. Plan thoroughly. Write clean, typed code. No placeholders.',
@@ -139,6 +174,8 @@ function buildSystemPrompt(params: {
   return `${roleContext}
 
 You work on real production codebases. You are methodical, thorough, and security-obsessed.
+
+MEMORY-FIRST RULE: Call mcp__raz__get_memory as your FIRST action. Use what prior agents discovered before reading any files. Only read files when memory is insufficient — this prevents redundant work and saves tokens.
 
 ══════════════════════════════════════
 ARCHON SYSTEMS CONTEXT
@@ -206,7 +243,7 @@ CODE QUALITY
 • TypeScript: no "any", explicit return types on exports
 • No console.log in production code
 • Conventional commits: feat:, fix:, refactor:, chore:, test:, docs:
-${memoryBlock}${historyBlock}${issueBlock}${delegationBlock}`
+${memoryBlock}${historyBlock}${issueBlock}${chatBlock}${delegationBlock}`
 }
 
 // ── MCP config ────────────────────────────────────────────────────────────────
@@ -255,6 +292,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
   const {
     taskId, repoPath, description, branch, workflow,
     role, repoId, issueNumber, github, parentRole, existingWorktree,
+    baseBranch = 'master',
   } = task
 
   const roleDefinition = ROLES[role ?? DEFAULT_ROLE]
@@ -269,7 +307,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       onEvent({ type: 'thinking', message: `[sub-agent] Starting in parent worktree: ${path.basename(existingWorktree)}` })
     } else {
       onEvent({ type: 'thinking', message: `Initializing worktree on branch: ${branch}` })
-      worktreePath = setupWorktree(repoPath, branch)
+      worktreePath = setupWorktree(repoPath, branch, baseBranch)
       saveWorktreePath(taskId, worktreePath)
     }
 
@@ -279,7 +317,8 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       if (cached) issueContent = `#${cached.number}: ${cached.title}\n\n${cached.body ?? ''}`
     }
 
-    const systemPrompt = buildSystemPrompt({ workflow, roleContext: roleDefinition.systemContext, issueContent, parentRole })
+    const chatContext  = repoId ? getRecentChatContext(repoId) : ''
+    const systemPrompt = buildSystemPrompt({ workflow, roleContext: roleDefinition.systemContext, issueContent, parentRole, chatContext: chatContext || undefined })
 
     // Build tool allowlist: map SDK tool names to Claude Code built-in names + MCP tool names
     const builtinMap: Record<string, string> = {
@@ -477,7 +516,12 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     }, 500)
 
     // ── Handoff processing from result ────────────────────────────────────────
+    // Sub-agents share the parent's worktree and never own their own PR lifecycle,
+    // so they cannot create handoff tasks. Only the main (non-sub) agent creates them,
+    // and they start as 'pending' — route.ts activates them after the PR is merged
+    // so the follow-on agent always branches from a fully-synced origin.
     const processHandoffs = () => {
+      if (isSubAgent) return
       const handoffPath = path.join(worktreePath!, '.raziel-handoff.json')
       if (!fs.existsSync(handoffPath)) return
       try {
@@ -491,7 +535,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
           const branchSlug = h.description.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 25).replace(/-$/, '')
           const newBranch  = `${toRole.toLowerCase().replace('-', '')}/handoff-${branchSlug}-${newId.slice(0, 6)}`
           const fullDesc   = h.context ? `${h.description}\n\nContext:\n${h.context}` : h.description
-          createQueuedTask(newId, repoId, fullDesc, newBranch, toWf, toRole, taskId)
+          createQueuedTask(newId, repoId, fullDesc, newBranch, toWf, toRole, taskId, 'pending')
           createAgentMessage({ repoId, fromRole: role ?? DEFAULT_ROLE, toRole, fromTaskId: taskId, toTaskId: newId, messageType: 'handoff', message: h.description, context: h.context })
           onEvent({ type: 'handoff', message: `⟶ ${toRole}: ${h.description.slice(0, 80)}`, data: { taskId: newId, role: toRole, description: fullDesc, workflow: toWf, branch: newBranch } })
         }
