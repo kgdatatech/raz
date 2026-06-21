@@ -1,17 +1,19 @@
 import { execSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import {
-  getConfig, getNextQueuedTask, getRepoById, getTask,
+  getConfig, getNextQueuedTask, getRepoById, getTask, listRepos,
   resetTaskToRunning, completeTask, failTask, saveTaskLog, activateHandoffs,
   hasRunningDuplicate, hasRecentCompletion, createQueuedTask,
   type TaskRow, type RepoRow,
 } from './db'
+import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
 import { runAgent } from './agent'
 import { pushBranchAndOpenPR, mergePR, getPRStatus } from './github'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from './roles'
 
-let isProcessing = false
-let started      = false
+let isProcessing   = false
+let started        = false
+let lastHealthScan = 0
 
 // Max number of CI wait retries before giving up (5s queue tick × 90 = 7.5 min)
 const CI_WAIT_MAX = 90
@@ -215,7 +217,17 @@ async function processQueue(): Promise<void> {
   if (mode !== 'autonomous') return
 
   const task = getNextQueuedTask()
-  if (!task) return
+  if (!task) {
+    // Queue is empty — seed health tasks at most once per HEALTH_SCAN_INTERVAL
+    const now = Date.now()
+    if (now - lastHealthScan > HEALTH_SCAN_INTERVAL) {
+      lastHealthScan = now
+      for (const repo of listRepos()) {
+        if (repo.local_path) await seedHealthTasks(repo)
+      }
+    }
+    return
+  }
 
   const repo = getRepoById(task.repo_id)
   if (!repo?.local_path) return
