@@ -179,7 +179,7 @@ function readContextFiles(repoPath: string): string {
 }
 
 // ── Message compression ────────────────────────────────────────────────────────
-function compressMessages(messages: Anthropic.MessageParam[], keepTurns = 6): Anthropic.MessageParam[] {
+export function compressMessages(messages: Anthropic.MessageParam[], keepTurns = 6): Anthropic.MessageParam[] {
   const cutoff = messages.length - keepTurns * 2
   if (cutoff <= 1) return messages
 
