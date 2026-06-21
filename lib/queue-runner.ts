@@ -7,6 +7,7 @@ import {
   PRIORITY, type TaskRow, type RepoRow,
 } from './db'
 import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
+import { seedMemoryTasks } from './memory-tasks'
 import { runAgent } from './agent'
 import { pushBranchAndOpenPR, mergePR, getPRStatus } from './github'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from './roles'
@@ -229,6 +230,7 @@ async function processQueue(): Promise<void> {
       lastHealthScan = now
       for (const repo of listRepos()) {
         if (repo.local_path) await seedHealthTasks(repo)
+        await seedMemoryTasks(repo)
       }
     }
     return
