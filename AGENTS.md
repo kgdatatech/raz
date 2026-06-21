@@ -141,7 +141,8 @@ Copy `.env.example` → `.env.local` to get started.
 | `feature` | RAZ-Dev | New functionality |
 | `fix` | RAZ-Dev | Bug fixes |
 | `refactor` | RAZ-Dev | Code cleanup, no behavior change |
-| `audit` | RAZ-Sec, RAZ-Ops | Read-only analysis |
+| `review` | RAZ-QA | **Pre-merge gate** — approve or request changes before a PR merges. Auto-queued by the system after every PR opens. Post a clear verdict via `post_pr_review`. |
+| `audit` | RAZ-Sec, RAZ-Ops, RAZ-QA | Post-merge deeper analysis. PR already merged. Use `comment` verdict. |
 | `test` | RAZ-QA | Writing or improving tests |
 | `strategy` | RAZ-Ops | Planning, research, no code changes |
 | `self` | RAZ-Dev, RAZ-Ops | Improving the RAZ system itself |
