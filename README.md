@@ -1,66 +1,95 @@
-# RAZ — Agentic Coding Framework
+# Raziel (RAZ)
 
-RAZ is Archon Systems' internal AI coding agent framework. It connects Claude to your GitHub repositories, runs as a local Next.js app, and gives the team a UI to dispatch autonomous coding tasks — feature builds, bug fixes, security audits, QA, migrations, and ops assessments — each producing a real git branch and pull request.
+**A self-operating engineering team that runs on your machine.**
 
-## How it works
+You point RAZ at a GitHub repo. It watches for issues and pull requests, picks the right specialist agent to handle each one, does the work in an isolated branch, opens a PR, reviews it before merging, waits for CI to pass, then merges. When its queue runs dry, it scans the codebase itself for things to fix and queues those too. The only thing you have to do is turn it on.
 
-1. Select a GitHub repository from the dropdown (synced from your token).
-2. Set the local path where that repo is cloned on the machine running RAZ.
-3. Choose an agent role and workflow type.
-4. Describe the task in plain language and hit **Run**.
-
-RAZ creates a git worktree, runs the agent loop (plan → explore → implement → verify → complete), commits the result, and opens a pull request — all visible in real time through the agent log.
-
-Tasks and per-repo memory persist in a local SQLite database (`.raziel/raziel.db`). If a task is interrupted, resume picks up from the last saved checkpoint without re-spending API cost.
+Built by Archon Systems.
 
 ---
 
-## Agent Roles
+## What it does
 
-| Role | Badge | Purpose |
-|------|-------|---------|
-| RAZ-Dev  | `DEV`  | Full-stack feature development, bug fixes, refactors |
-| RAZ-Sec  | `SEC`  | Read-only security audit — OWASP Top 10, secrets, CVEs |
-| RAZ-QA   | `QA`   | Test writing, coverage analysis |
-| RAZ-Ops  | `OPS`  | Build health, environment config, CI/CD assessment |
-| RAZ-Data | `DATA` | Database migrations, schema validation |
+RAZ runs a prioritized task queue. Each task is claimed by one of five specialist agents:
 
-Each role has a defined tool allowlist, mandatory gates (e.g. RAZ-Dev must run `run_build` and `security_scan` before completing), and a role-specific system prompt. All roles read `AGENTS.md` as their mandatory first step before touching any code.
+| Agent | Role |
+|---|---|
+| **RAZ-Dev** | Features, bug fixes, refactors |
+| **RAZ-QA** | Tests, coverage, pre-merge code review |
+| **RAZ-Sec** | Security audits, dependency scanning |
+| **RAZ-Ops** | Build health, ops reports, failure recovery |
+| **RAZ-Data** | Schema migrations, data pipelines |
 
----
-
-## Agent-to-Agent Communication
-
-Roles can collaborate autonomously in two ways:
-
-### Delegation
-A role can delegate a sub-task to another role inline using `delegate_to_role`. The sub-agent:
-- Runs inside the parent's worktree (sees in-progress changes)
-- Streams its log with a `[SubRole]` prefix, visually indented
-- Does **not** commit — the parent owns the final commit
-- Is capped at 20 iterations
-
-Example: RAZ-Dev delegates a security review to RAZ-Sec mid-feature, gets a report back, then continues implementation.
-
-### Handoffs
-When a task completes, the agent can propose handing off follow-up work to a peer role using `handoff_to_role`. The handoff:
-- Surfaces as an amber **suggestion card** inline in the agent log — it does **not** auto-run
-- Shows the suggested role, workflow, and description of the next task
-- You click **Accept** to queue and run it, or **Dismiss** to drop it
-
-All inter-agent communication is logged to the database and visible in the **Comms** tab.
+Every PR runs through a gate: RAZ-QA reviews it, CI must be green, then it merges. If either fails, RAZ queues a fix and retries automatically.
 
 ---
 
-## Prerequisites
+## How tasks enter the queue
 
-- **Node.js 18+**
-- **Git** available in `PATH`
-- An **Anthropic API key** (Claude Sonnet 4.x or later)
-- A **GitHub Personal Access Token** with `repo`, `read:org`, and `workflow` scopes
-- The target repositories cloned locally on the machine running RAZ
+**You** — type a task in the dashboard. RAZ routes it to the right agent.
 
-> **Windows + WSL:** RAZ detects WSL paths (`\\wsl.localhost\...`) automatically and routes commands through the correct distro.
+**GitHub issues** — open an issue on GitHub and RAZ queues a task for it automatically. Labels determine which agent picks it up:
+
+| Label | Agent | Workflow |
+|---|---|---|
+| `bug`, `fix`, `regression` | RAZ-Dev | fix |
+| `testing`, `coverage` | RAZ-QA | test |
+| `security`, `vuln`, `cve` | RAZ-Sec | audit |
+| `ops`, `infra`, `ci` | RAZ-Ops | strategy |
+| `data`, `db`, `migration` | RAZ-Data | feature |
+
+**GitHub webhooks** — RAZ reacts to events in real time:
+
+| Event | What happens |
+|---|---|
+| Issue opened/reopened | Syncs issue, queues role-matched task |
+| PR opened | Queues RAZ-QA pre-merge review |
+| PR merged | Queues RAZ-QA post-merge audit |
+| Human reviewer requests changes | Queues HIGH priority RAZ-Dev fix with feedback text |
+| Push to default branch | Queues RAZ-Ops health scan |
+
+**Autonomous health scan** — when the queue empties, RAZ scans the repo for TODOs/FIXMEs, source files missing test coverage, and open issues with no task. It queues what it finds.
+
+**Agent memory** — agents save findings as they work (e.g. `bug:login-crash`, `security:exposed-key`). RAZ reads those entries and converts actionable ones into queued tasks automatically.
+
+**Failed tasks** — if an agent fails, RAZ-Ops is auto-queued to investigate and propose a strategy.
+
+---
+
+## The merge pipeline
+
+```
+Task queued
+  → Agent works in isolated git worktree
+  → Commits + opens PR
+  → RAZ-QA reviews (pre-merge gate)
+    → Approved: check CI
+      → CI passing: merge
+      → CI pending: poll every 5s (up to 7.5 min)
+      → CI failing: queue CRITICAL RAZ-Dev fix
+    → Changes requested: queue HIGH priority RAZ-Dev fix
+  → RAZ-QA audits post-merge
+  → Next task
+```
+
+---
+
+## Priority ordering
+
+| Priority | When it's used |
+|---|---|
+| **CRITICAL** | CI failures blocking a merge |
+| **HIGH** | Review feedback, failed task recovery |
+| **NORMAL** | Features, health scan findings, audits |
+
+Within the same priority tier, tasks run FIFO.
+
+---
+
+## Modes
+
+- **Autonomous** — the queue runs itself. Turn it on in the dashboard config panel.
+- **Standard** — you trigger each task manually. Default.
 
 ---
 
@@ -68,172 +97,87 @@ All inter-agent communication is logged to the database and visible in the **Com
 
 ```bash
 git clone <this-repo>
-cd raz-agent
+cd raziel
 npm install
 cp .env.example .env.local
+npm run dev   # http://localhost:3000
 ```
 
-Edit `.env.local` and fill in both values:
+**Required env vars:**
 
-```
-ANTHROPIC_API_KEY=sk-ant-...
-GITHUB_TOKEN=ghp_...
-```
+| Variable | Description |
+|---|---|
+| `ANTHROPIC_API_KEY` | Claude API key |
+| `GITHUB_TOKEN` | Fine-grained PAT with `repo`, `pull_requests`, `contents` scopes |
+| `GITHUB_WEBHOOK_SECRET` | Secret for verifying GitHub webhook payloads |
 
-Start the development server:
+**Webhook setup** — in your GitHub repo go to Settings → Webhooks → Add webhook:
+- Payload URL: `https://your-host/api/webhook/github`
+- Content type: `application/json`
+- Secret: same value as `GITHUB_WEBHOOK_SECRET`
+- Events: `Issues`, `Pull requests`, `Pull request reviews`, `Pushes`
 
-```bash
-npm run dev
-```
+**Optional:**
 
-Open `http://localhost:3000` in your browser.
+| Variable | Description |
+|---|---|
+| `RAZ_RUNNER` | `cc` to use the Claude Code CLI runner instead of the default SDK runner |
 
 ---
 
 ## First run
 
-1. The repository list loads from GitHub automatically on startup.
-2. Select a repo. If it has no local path saved, a path input appears — enter the absolute path to the local clone and click **Save**.
-3. Choose a role (DEV by default) and workflow.
-4. Type a task description and click **Run [role]**.
+1. RAZ loads your GitHub repos on startup.
+2. Select a repo. Enter its absolute local path when prompted and click **Save**.
+3. Choose a role and workflow, type a task, hit **Run**.
 
-The agent log streams in real time. When the task completes, a pull request link appears in the log header.
-
----
-
-## Task queue
-
-Click **+Q** instead of **Run** to queue a task. Queued tasks run automatically in sequence after the current task finishes. Handoff-accepted tasks also enter the queue if an agent is currently running.
+The agent log streams in real time. When done, a PR link appears in the log header.
 
 ---
 
-## UI layout
+## UI panels
 
-The dashboard has three main areas:
-
-- **Left panel** — repo selector, role/workflow picker, task input, run/queue controls
-- **Agent log** — real-time event stream (thinking, tool calls, plan, completion). Handoff suggestion cards appear inline here when proposed. Click any plan event to open the plan sidebar.
-- **Plan sidebar** — slides in from the right when an agent creates a plan. Close with ✕ or reopen via the `⊞ Plan` tab on the right edge.
-- **Bottom panel** — five tabs:
-
-| Tab | What it shows |
-|-----|--------------|
-| **History** | All tasks — status, role, workflow, files changed count, child task indicator. Click any row to open the task detail modal. |
-| **Memory** | Per-repo memory entries saved by the agent. Editable and deletable inline. |
-| **Comms** | All inter-agent messages — delegations and handoffs — with from/to role, type badge, and result summary. |
-| **Issues** | GitHub issues synced to the local DB. Filter open/closed, sync from GitHub, or click "→ Use as task" to populate the task input. |
-| **Reports** | Markdown audit/ops reports generated by RAZ-Sec and RAZ-Ops. Click any report to open a full-screen viewer with download. |
+| Area | What it shows |
+|---|---|
+| **Left panel** | Repo selector, role/workflow picker, task input, run/queue controls |
+| **Agent log** | Real-time event stream — thinking, tool calls, plan, completion |
+| **Plan sidebar** | Slides in when an agent creates a plan |
+| **History** | All tasks with status, role, workflow, PR link. Click a row for full detail. |
+| **Memory** | Per-repo memory entries. Editable and deletable inline. |
+| **Comms** | All inter-agent delegations and handoffs. |
+| **Issues** | GitHub issues synced to local DB. Click "→ Use as task" to populate the input. |
+| **Reports** | Markdown reports from RAZ-Sec and RAZ-Ops. |
 
 ---
 
-## Task detail modal
+## Agent collaboration
 
-Clicking a history row opens the detail modal showing:
+**Delegate** (`delegate_to_role`) — spawn a sub-agent right now and wait for the result. Sub-agents run inside the parent's worktree and cannot commit. Use when you need specialist input before completing.
 
-- Status, role, workflow, linked issue number
-- Pull request link with live CI status, review decision, and merged state
-- Agent summary in markdown
-- Files changed (full list)
-- Error text for failed tasks
-- Agent plan
-- Parent task reference for delegated sub-tasks
-
-Failed tasks show a **↺ Retry** button to resume from the last checkpoint.
+**Handoff** (`handoff_to_role`) — queue follow-up work for another role after you complete. Shows as an amber card in the agent log. Click Accept to queue it.
 
 ---
 
-## Memory and self-improvement
+## Testing standard
 
-RAZ is designed to get cheaper and faster over time through a growing memory system:
+Every new RAZ feature ships with tests. RAZ-QA will `request_changes` on any PR that doesn't include them — the PR does not merge until tests are added.
 
-- **Per-task log persistence** — every agent run saves its full event log (thinking, tool calls, plan, completion) to the database. `tool_result` entries are truncated to keep storage lean while preserving the reasoning trail.
-- **Structured memory** — agents are instructed to call `save_memory` after every significant file read or finding, using typed keys (`file:<path>`, `finding:<slug>`, `fix:<slug>`, `pattern:<name>`). This builds a reusable knowledge base per repo.
-- **Context injection** — every new task starts with the repo's full memory and the last 10 task summaries injected into the system prompt. Agents are told to check memory before re-reading files — if memory already covers a file, the read is skipped entirely, saving input tokens.
-
-Memory is visible and editable in the **Memory** tab. You can delete or correct individual entries at any time.
-
----
-
-## Checkpoint / resume
-
-Every agent iteration is checkpointed to the database. If a task fails or is interrupted, click **↺ Retry** in the task history to resume from the last saved state. The agent picks up where it left off without repeating completed steps.
+```bash
+npm test           # 178 tests, all must pass
+npm run test:watch # interactive
+```
 
 ---
 
 ## Security constraints
 
-The agent runs inside a git worktree isolated from the main branch. It cannot:
-
-- Read, write, or log `.env` files or any secret files
-- Run destructive commands (`rm -rf`, `git reset --hard`, `DROP TABLE`, `DELETE` without `WHERE`)
-- Make outbound HTTP requests from tools
-- Escape the worktree path
-
-`security_scan` runs on every changed file before a task can complete. If secrets are detected, the agent is blocked from calling `task_complete`.
+Agents run inside an isolated git worktree. They cannot read `.env` files, make outbound HTTP calls from tools, or escape the worktree path. `security_scan` runs on every changed file before a task can complete.
 
 ---
 
-## Project structure
+## Stack
 
-```
-app/
-  api/
-    agent/      — SSE stream endpoint; runs the agent loop, buffers and saves log_json
-    repos/      — GitHub repo sync + local path management
-    issues/     — GitHub issue sync and retrieval
-    tasks/      — Task CRUD
-    memory/     — Per-repo memory CRUD
-    messages/   — Agent message log (delegations + handoffs)
-    pr-status/  — Latest PR CI/review state for a task
-    reports/    — List and read .raziel/reports/*.md files
-  page.tsx      — Main dashboard UI
-  layout.tsx    — Root layout with fonts
-lib/
-  agent.ts      — Core agent loop, worktree management, sub-agent closures, system prompt
-  tools.ts      — Tool definitions and execution (filesystem, bash, git, GitHub, delegation)
-  roles.ts      — Role definitions, tool allowlists, system contexts
-  db.ts         — SQLite schema and all DB operations (better-sqlite3)
-scripts/
-  fix-stuck.js  — Manually reset a stuck running task in the DB
-  read-last.js  — Print the last N log lines for a task
-.raziel/
-  raziel.db     — Local SQLite database (git-ignored)
-  reports/      — Markdown reports generated by RAZ-Sec and RAZ-Ops
-```
-
----
-
-## Customizing roles
-
-Edit `lib/roles.ts` to change role names, badge colors, tool allowlists, or system prompt context. The `systemContext` field is injected verbatim into the agent's system prompt for that role.
-
-To add a new role, extend the `ROLE_IDS` array and add a matching entry to the `ROLES` record.
-
----
-
-## AGENTS.md convention
-
-RAZ reads `AGENTS.md` (and `CLAUDE.md` → `@AGENTS.md`) from each target repository before starting work. Use this file to document project-specific conventions, framework versions, and rules the agent must follow. All roles are instructed to read this file as their mandatory first step.
-
-Example `AGENTS.md` for a target repo:
-
-```md
-# Project conventions
-
-- Uses Next.js 15 App Router — not Pages Router
-- Database: Supabase (Postgres). Migrations live in supabase/migrations/
-- Do not use `any` in TypeScript
-- All API routes must validate input with zod
-```
-
----
-
-## Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Claude API key |
-| `GITHUB_TOKEN` | Yes | GitHub PAT for repo/issue access and PR creation |
+Next.js 16 · React 19 · TypeScript strict · Tailwind v4 · SQLite (better-sqlite3) · Anthropic SDK · Octokit · Vitest
 
 ---
 
