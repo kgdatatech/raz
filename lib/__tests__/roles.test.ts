@@ -58,4 +58,33 @@ describe('roles', () => {
   it('RAZ-Sec securityRequired is true', () => {
     expect(ROLES['RAZ-Sec'].securityRequired).toBe(true)
   })
+
+  it('RAZ-QA has PR review tools for code review workflow', () => {
+    const tools = ROLES['RAZ-QA'].allowedTools
+    expect(tools).toContain('list_open_prs')
+    expect(tools).toContain('get_pr_summary')
+    expect(tools).toContain('get_pr_file_diff')
+    expect(tools).toContain('post_pr_review')
+  })
+
+  it('RAZ-Sec and RAZ-Ops can read PRs but not post reviews', () => {
+    expect(ROLES['RAZ-Sec'].allowedTools).toContain('get_pr_summary')
+    expect(ROLES['RAZ-Sec'].allowedTools).not.toContain('post_pr_review')
+    expect(ROLES['RAZ-Ops'].allowedTools).toContain('get_pr_summary')
+    expect(ROLES['RAZ-Ops'].allowedTools).not.toContain('post_pr_review')
+  })
+
+  it('RAZ-QA systemContext mentions both review and audit workflows', () => {
+    const ctx = ROLES['RAZ-QA'].systemContext
+    expect(ctx).toContain('PRE-MERGE REVIEW WORKFLOW')
+    expect(ctx).toContain('POST-MERGE AUDIT WORKFLOW')
+    expect(ctx).toContain('get_pr_summary')
+    expect(ctx).toContain('get_pr_file_diff')
+    expect(ctx).toContain('post_pr_review')
+  })
+
+  it('write-capable roles include security_scan', () => {
+    expect(ROLES['RAZ-Dev'].allowedTools).toContain('security_scan')
+    expect(ROLES['RAZ-Data'].allowedTools).toContain('security_scan')
+  })
 })

@@ -603,8 +603,9 @@ export function getRecentChatContext(repoId: number, limit = 6): string {
     `SELECT role, content, created_at FROM chat_messages WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?`
   ).all(repoId, limit) as { role: string; content: string; created_at: string }[]
   if (msgs.length === 0) return ''
-  // Skip stale context — chat older than 30 min is noise for agents
-  const ageMs = Date.now() - new Date(msgs[0]!.created_at).getTime()
+  // SQLite datetime('now') returns UTC without timezone indicator.
+  // Appending 'Z' forces JS to parse it as UTC instead of local time.
+  const ageMs = Date.now() - new Date(msgs[0]!.created_at.replace(' ', 'T') + 'Z').getTime()
   if (ageMs > 30 * 60 * 1000) return ''
   return msgs
     .reverse()
