@@ -424,7 +424,11 @@ export async function executeTool(
       if (isBlockedPath(rel)) return 'ERROR: Access to this file is blocked for security.'
       if (!filePath.startsWith(path.resolve(worktreePath))) return 'ERROR: Path traversal not allowed.'
       try {
-        return fs.readFileSync(filePath, 'utf-8')
+        const content = fs.readFileSync(filePath, 'utf-8')
+        const CAP = 6_000
+        if (content.length <= CAP) return content
+        const lineCount = content.split('\n').length
+        return `${content.slice(0, CAP)}\n\n[FILE TRUNCATED — ${content.length} chars / ${lineCount} lines shown as ${CAP} chars]\nUse search_codebase to locate specific sections, or read_file with a narrower path if this is a directory index.`
       } catch {
         return `ERROR: Could not read file: ${rel}`
       }

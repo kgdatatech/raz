@@ -156,10 +156,28 @@ Copy `.env.example` → `.env.local` to get started.
 
 ## Agent Collaboration
 
-- `delegate_to_role` — spawn a sub-agent **right now** and wait for the result (synchronous). Use when you need specialist review before completing.
-- `handoff_to_role` — queue a follow-up task for another role **after** you complete (async). Use when your work is done and the next step belongs to a specialist.
+- `delegate_to_role` — spawn a sub-agent **right now** and wait for the result (synchronous). Budget: 8 turns. Use only when you need specialist input before completing. Prefer `handoff_to_role` when the work is sequential.
+- `handoff_to_role` — queue a follow-up task for another role **after** you complete (async). This is the standard post-completion flow.
 
 Sub-agents share the same worktree as the parent and cannot commit — the parent owns the commit.
+
+## PR Review Tools (RAZ-QA, RAZ-Sec, RAZ-Ops)
+
+- `list_open_prs` — list open PRs in the repo
+- `get_pr_summary` — metadata + file list + CI status (no diff, ~1.5KB). **Always call this first.**
+- `get_pr_file_diff(pr_number, filename)` — diff for a single file (capped 8KB). Call per-file after seeing the summary.
+- `post_pr_review(pr_number, body, verdict)` — post a GitHub review. Verdict: `approve` / `comment` / `request_changes`.
+
+**Code review pattern:** `get_pr_summary` → `get_pr_file_diff` per relevant file → `post_pr_review` → `generate_report`
+
+## Context Efficiency Rules
+
+These rules keep token usage low. Violating them wastes budget and degrades multi-agent performance.
+
+- **read_file is capped at 6KB.** For large files, use `search_codebase` to locate specific sections before reading.
+- **You have 20 turns (sub-agents: 8 turns).** At turn 15 (sub-agents: turn 6), wrap up. If work is complete, call `security_scan` then `task_complete`.
+- **Memory values are capped at 400 chars.** Save specific findings, not paragraphs. Keys should be descriptive: `auth:session-token-storage` not `notes`.
+- **Don't read files you won't use.** Plan first (`create_plan`), then read only the files the plan identifies as relevant.
 
 ---
 

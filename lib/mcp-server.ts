@@ -304,18 +304,15 @@ server.tool(
   },
 )
 
-// ── review_pr ─────────────────────────────────────────────────────────────────
+// ── get_pr_summary ────────────────────────────────────────────────────────────
 server.tool(
-  'review_pr',
-  'Fetch full context for a GitHub PR: metadata, file list, CI status, existing reviews, and the complete diff. Call this at the start of any code review task.',
-  { pr_number: z.number().describe('Pull request number to review') },
+  'get_pr_summary',
+  'Fetch PR metadata, file list, CI status, and existing comments — no diff. Always call this first in a code review. Then call get_pr_file_diff for specific files you want to inspect.',
+  { pr_number: z.number().describe('Pull request number') },
   async ({ pr_number }) => {
     await checkPauseOrAbort()
-    const { getPRDetails, getPRDiff } = await import('./github')
-    const [details, diff] = await Promise.all([
-      getPRDetails(GITHUB_OWNER, GITHUB_REPO, pr_number),
-      getPRDiff(GITHUB_OWNER, GITHUB_REPO, pr_number),
-    ])
+    const { getPRDetails } = await import('./github')
+    const details = await getPRDetails(GITHUB_OWNER, GITHUB_REPO, pr_number)
 
     const fileList = details.files
       .map((f) => `  ${f.status.padEnd(8)} +${f.additions}/-${f.deletions}  ${f.filename}`)
@@ -331,19 +328,32 @@ server.tool(
       `Author: ${details.author}  |  Created: ${details.createdAt.slice(0, 10)}`,
       ``,
       `DESCRIPTION:`,
-      details.body?.slice(0, 800) ?? '(no description)',
+      details.body?.slice(0, 600) ?? '(no description)',
       ``,
-      `FILES CHANGED (${details.files.length}):`,
+      `FILES CHANGED (${details.files.length}) — use get_pr_file_diff to inspect specific files:`,
       fileList,
       ``,
       `EXISTING COMMENTS:`,
       comments,
-      ``,
-      `DIFF (capped at 40KB):`,
-      diff || '(diff not available — PR may already be merged)',
     ].join('\n')
 
     return { content: [{ type: 'text' as const, text }] }
+  },
+)
+
+// ── get_pr_file_diff ──────────────────────────────────────────────────────────
+server.tool(
+  'get_pr_file_diff',
+  'Fetch the diff for a single file in a PR (capped at 8KB). Call get_pr_summary first to see the file list, then call this for each file you want to inspect in depth.',
+  {
+    pr_number: z.number().describe('Pull request number'),
+    filename:  z.string().describe('Exact filename from the get_pr_summary file list (e.g. "lib/agent-sdk.ts")'),
+  },
+  async ({ pr_number, filename }) => {
+    await checkPauseOrAbort()
+    const { getPRFileDiff } = await import('./github')
+    const diff = await getPRFileDiff(GITHUB_OWNER, GITHUB_REPO, pr_number, filename)
+    return { content: [{ type: 'text' as const, text: diff }] }
   },
 )
 
