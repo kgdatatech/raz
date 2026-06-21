@@ -3,7 +3,10 @@ import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { setMemory, savePlan } from './db'
-import { fetchIssue, listOpenIssues } from './github'
+import {
+  fetchIssue, listOpenIssues, listOpenPRs,
+  getPRDetails, getPRFileDiff, createPRReview,
+} from './github'
 
 const execAsync = promisify(exec)
 
@@ -308,6 +311,47 @@ export const TOOLS = [
       required: [],
     },
   },
+  {
+    name: 'list_open_prs',
+    description: 'List open pull requests for the current repo.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'get_pr_summary',
+    description: 'Fetch PR metadata, file list, CI status, and existing comments — no diff. Always call this first in a code review. Then call get_pr_file_diff for specific files.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pr_number: { type: 'number', description: 'Pull request number' },
+      },
+      required: ['pr_number'],
+    },
+  },
+  {
+    name: 'get_pr_file_diff',
+    description: 'Fetch the diff for a single file in a PR (capped at 8KB). Call get_pr_summary first to see the file list.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pr_number: { type: 'number', description: 'Pull request number' },
+        filename:  { type: 'string', description: 'Exact filename from the get_pr_summary file list (e.g. "lib/agent-sdk.ts")' },
+      },
+      required: ['pr_number', 'filename'],
+    },
+  },
+  {
+    name: 'post_pr_review',
+    description: 'Post a code review to a GitHub PR. Verdict: "approve", "comment", or "request_changes". For pre-merge reviews (workflow=review) only use approve or request_changes — never comment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pr_number: { type: 'number', description: 'Pull request number' },
+        body:      { type: 'string', description: 'Review body — summarize findings, list issues with file/line/severity if requesting changes' },
+        verdict:   { type: 'string', enum: ['approve', 'comment', 'request_changes'], description: 'Review verdict' },
+      },
+      required: ['pr_number', 'body', 'verdict'],
+    },
+  },
 
   // ── Specialized ──────────────────────────────────────────────────────────────
   {
@@ -404,6 +448,7 @@ export type ToolName =
   | 'execute_bash' | 'run_build' | 'run_tests' | 'run_lint'
   | 'create_plan' | 'save_memory' | 'security_scan'
   | 'fetch_issue' | 'list_issues'
+  | 'list_open_prs' | 'get_pr_summary' | 'get_pr_file_diff' | 'post_pr_review'
   | 'dependency_audit' | 'generate_report' | 'check_coverage' | 'validate_migration'
   | 'delegate_to_role' | 'handoff_to_role'
   | 'task_complete'
@@ -667,6 +712,73 @@ export async function executeTool(
         return await listOpenIssues(github.owner, github.repo, (input.limit as number | undefined) ?? 20)
       } catch (e) {
         return `ERROR: Could not list issues: ${e}`
+      }
+    }
+
+    // ── list_open_prs ─────────────────────────────────────────────────────────
+    case 'list_open_prs': {
+      if (!github) return 'ERROR: No GitHub context available.'
+      try {
+        return await listOpenPRs(github.owner, github.repo)
+      } catch (e) {
+        return `ERROR: Could not list PRs: ${e}`
+      }
+    }
+
+    // ── get_pr_summary ────────────────────────────────────────────────────────
+    case 'get_pr_summary': {
+      if (!github) return 'ERROR: No GitHub context available.'
+      try {
+        const prNumber = input.pr_number as number
+        const details  = await getPRDetails(github.owner, github.repo, prNumber)
+        const fileList = details.files
+          .map((f) => `  ${f.status.padEnd(8)} +${f.additions}/-${f.deletions}  ${f.filename}`)
+          .join('\n')
+        const comments = details.comments.length > 0
+          ? details.comments.map((c) => `  [${c.author}] ${c.body.slice(0, 200)}`).join('\n')
+          : '  (none)'
+        return [
+          `PR #${details.number}: ${details.title}`,
+          `State: ${details.state}${details.merged ? ' (merged)' : ''}  |  CI: ${details.ciStatus}  |  Approvals: ${details.approvals}`,
+          `Author: ${details.author}  |  Created: ${details.createdAt.slice(0, 10)}`,
+          ``,
+          `DESCRIPTION:`,
+          details.body?.slice(0, 600) ?? '(no description)',
+          ``,
+          `FILES CHANGED (${details.files.length}) — use get_pr_file_diff to inspect specific files:`,
+          fileList,
+          ``,
+          `EXISTING COMMENTS:`,
+          comments,
+        ].join('\n')
+      } catch (e) {
+        return `ERROR: Could not fetch PR summary: ${e}`
+      }
+    }
+
+    // ── get_pr_file_diff ──────────────────────────────────────────────────────
+    case 'get_pr_file_diff': {
+      if (!github) return 'ERROR: No GitHub context available.'
+      try {
+        return await getPRFileDiff(github.owner, github.repo, input.pr_number as number, input.filename as string)
+      } catch (e) {
+        return `ERROR: Could not fetch file diff: ${e}`
+      }
+    }
+
+    // ── post_pr_review ────────────────────────────────────────────────────────
+    case 'post_pr_review': {
+      if (!github) return 'ERROR: No GitHub context available.'
+      try {
+        const verdictMap: Record<string, 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'> = {
+          approve:          'APPROVE',
+          request_changes:  'REQUEST_CHANGES',
+          comment:          'COMMENT',
+        }
+        const event = verdictMap[input.verdict as string] ?? 'COMMENT'
+        return await createPRReview(github.owner, github.repo, input.pr_number as number, input.body as string, event)
+      } catch (e) {
+        return `ERROR: Could not post review: ${e}`
       }
     }
 

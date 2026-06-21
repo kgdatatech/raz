@@ -551,15 +551,17 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         onEvent({ type: 'thinking', message: `[context] Compressed message history at turn ${iterations} — keeping last 6 turns verbatim.` })
       }
 
-      // Budget checkpoint: warn agent when 75% of budget consumed
+      // Budget checkpoint: append warning to the last real tool result so no fake IDs are injected.
+      // The Anthropic API rejects any tool_result whose tool_use_id does not match an actual tool_use
+      // from the previous assistant turn — creating a new block with a made-up ID causes a 400.
       if (iterations === Math.floor(maxIterations * 0.75)) {
         const last = messages[messages.length - 1]
         if (last?.role === 'user' && Array.isArray(last.content)) {
-          ;(last.content as Anthropic.ToolResultBlockParam[]).push({
-            type: 'tool_result',
-            tool_use_id: 'budget_checkpoint',
-            content: `⚠ BUDGET: Turn ${iterations} of ${maxIterations}. You have ~${maxIterations - iterations} turns left. If all critical changes are done, call security_scan then task_complete now.`,
-          } as Anthropic.ToolResultBlockParam)
+          const blocks = last.content as Anthropic.ToolResultBlockParam[]
+          const lastBlock = blocks[blocks.length - 1]
+          if (lastBlock?.type === 'tool_result' && typeof lastBlock.content === 'string') {
+            lastBlock.content += `\n\n⚠ BUDGET: Turn ${iterations}/${maxIterations}. ~${maxIterations - iterations} turns left. If all critical changes are done, call security_scan then task_complete now.`
+          }
         }
       }
 
