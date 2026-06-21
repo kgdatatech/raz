@@ -4,7 +4,7 @@ import {
   getConfig, getNextQueuedTask, getRepoById, getTask, listRepos,
   resetTaskToRunning, completeTask, failTask, saveTaskLog, activateHandoffs,
   hasRunningDuplicate, hasRecentCompletion, createQueuedTask,
-  type TaskRow, type RepoRow,
+  PRIORITY, type TaskRow, type RepoRow,
 } from './db'
 import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
 import { runAgent } from './agent'
@@ -37,6 +37,7 @@ export function queueFailureStrategy(task: TaskRow, repo: RepoRow, reason: strin
     'RAZ-Ops',
     task.id,
     'queued',
+    PRIORITY.HIGH,
   )
 }
 
@@ -115,12 +116,13 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
         'RAZ-Dev',
         task.id,
         'queued',
+        PRIORITY.HIGH,
       )
     }
     return
   }
 
-  // ciStatus === 'failing' — queue RAZ-Dev fix with check names
+  // ciStatus === 'failing' — queue RAZ-Dev fix with check names (CRITICAL: blocks merge)
   const fixId    = randomUUID()
   const failInfo = status.failingChecks.length > 0
     ? ` [${status.failingChecks.slice(0, 3).join(', ')}]`
@@ -134,6 +136,7 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
     'RAZ-Dev',
     task.id,
     'queued',
+    PRIORITY.CRITICAL,
   )
 }
 
@@ -176,7 +179,7 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
         'queued',
       )
     } else {
-      // CI is already failing — skip the wait, queue fix immediately with check names
+      // CI is already failing — skip the wait, queue fix immediately (CRITICAL: blocks merge)
       const fixId    = randomUUID()
       const failInfo = status.failingChecks.length > 0
         ? ` [${status.failingChecks.slice(0, 3).join(', ')}]`
@@ -190,10 +193,11 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
         'RAZ-Dev',
         task.id,
         'queued',
+        PRIORITY.CRITICAL,
       )
     }
   } else {
-    // QA requested changes — queue RAZ-Dev fix
+    // QA requested changes — queue RAZ-Dev fix (HIGH: blocks merge)
     const fixId   = randomUUID()
     const reason  = task.summary?.slice(0, 200) ?? 'Review requested changes — see GitHub PR for details.'
     createQueuedTask(
@@ -205,6 +209,7 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
       'RAZ-Dev',
       task.id,
       'queued',
+      PRIORITY.HIGH,
     )
   }
 }

@@ -179,6 +179,21 @@ if (VERSION < 11) {
   db.exec('PRAGMA user_version = 11')
 }
 
+if (VERSION < 12) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 1`) } catch {}
+  db.exec('PRAGMA user_version = 12')
+}
+
+// ─── Priority ─────────────────────────────────────────────────────────────────
+
+export const PRIORITY = {
+  CRITICAL: 3,
+  HIGH:     2,
+  NORMAL:   1,
+} as const
+
+export type PriorityLevel = typeof PRIORITY[keyof typeof PRIORITY]
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RepoRow {
@@ -197,6 +212,7 @@ export interface TaskRow {
   status:         string
   workflow:       string
   role:           string
+  priority:       number
   issue_number:   number | null
   plan:           string | null
   pr_url:         string | null
@@ -242,7 +258,11 @@ export function getRepoById(id: number): RepoRow | null {
 }
 
 export function getNextQueuedTask(): TaskRow | null {
-  return (db.prepare(`SELECT * FROM tasks WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`).get() as TaskRow) ?? null
+  return (db.prepare(`
+    SELECT * FROM tasks WHERE status = 'queued'
+    ORDER BY priority DESC, created_at ASC
+    LIMIT 1
+  `).get() as TaskRow) ?? null
 }
 
 export function countQueuedTasks(): number {
@@ -281,15 +301,16 @@ export function createQueuedTask(
   repoId: number,
   description: string,
   branch: string,
-  workflow = 'feature',
-  role = 'RAZ-Dev',
+  workflow  = 'feature',
+  role      = 'RAZ-Dev',
   parentTaskId?: string,
-  status: 'queued' | 'pending' = 'queued',
+  status:   'queued' | 'pending' = 'queued',
+  priority: PriorityLevel = PRIORITY.NORMAL,
 ): TaskRow {
   db.prepare(`
-    INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, repoId, description, branch, workflow, role, status, parentTaskId ?? null)
+    INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id, priority)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, repoId, description, branch, workflow, role, status, parentTaskId ?? null, priority)
   return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow
 }
 
