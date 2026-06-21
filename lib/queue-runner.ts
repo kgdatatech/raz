@@ -16,7 +16,7 @@ let started      = false
 // Max number of CI wait retries before giving up (5s queue tick × 90 = 7.5 min)
 const CI_WAIT_MAX = 90
 
-function parseCIWaitRetry(description: string): number {
+export function parseCIWaitRetry(description: string): number {
   const match = description.match(/CI wait #(\d+):/)
   return match ? parseInt(match[1]) : 1
 }
@@ -50,7 +50,7 @@ async function performMerge(
 // ── CI gate ───────────────────────────────────────────────────────────────────
 // Called instead of running an agent when workflow='ci_wait'.
 // Checks CI status and either merges, waits another tick, or queues a fix task.
-async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: number): Promise<void> {
+export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: number): Promise<void> {
   const parentTaskId = task.parent_task_id!
   const parentTask   = getTask(parentTaskId)
   const status       = await getPRStatus(repo.github_owner, repo.github_repo, prNumber)
@@ -115,7 +115,7 @@ async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: number): Pro
 
 // ── Pre-merge gate ────────────────────────────────────────────────────────────
 // Called after a workflow='review' task completes. Checks QA verdict then CI.
-async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<void> {
+export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<void> {
   if (task.workflow !== 'review' || !task.parent_task_id) return
 
   const parentTask = getTask(task.parent_task_id)
