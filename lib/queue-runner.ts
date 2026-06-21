@@ -16,6 +16,28 @@ let started      = false
 // Max number of CI wait retries before giving up (5s queue tick × 90 = 7.5 min)
 const CI_WAIT_MAX = 90
 
+// Workflows that should NOT trigger a failure strategy (to prevent infinite loops)
+const NO_RETRY_WORKFLOWS = new Set(['strategy', 'review', 'audit', 'ci_wait'])
+
+export function shouldQueueFailureStrategy(workflow: string | null): boolean {
+  return !NO_RETRY_WORKFLOWS.has(workflow ?? '')
+}
+
+export function queueFailureStrategy(task: TaskRow, repo: RepoRow, reason: string): void {
+  if (!shouldQueueFailureStrategy(task.workflow)) return
+  const id = randomUUID()
+  createQueuedTask(
+    id,
+    repo.id,
+    `Post-failure strategy: ${task.description.slice(0, 80)} — ${reason.slice(0, 120)}`,
+    `razops/strategy-${id.slice(0, 6)}`,
+    'strategy',
+    'RAZ-Ops',
+    task.id,
+    'queued',
+  )
+}
+
 export function parseCIWaitRetry(description: string): number {
   const match = description.match(/CI wait #(\d+):/)
   return match ? parseInt(match[1]) : 1
@@ -335,11 +357,15 @@ async function processQueue(): Promise<void> {
       await handleReviewGate(task, repo)
       activateHandoffs(task.id)
     } else {
-      failTask(task.id, 'Agent did not reach task_complete')
+      const reason = 'Agent did not reach task_complete'
+      failTask(task.id, reason)
+      queueFailureStrategy(task, repo, reason)
     }
   } catch (err) {
     saveTaskLog(task.id, logBuffer)
-    failTask(task.id, String(err))
+    const reason = String(err)
+    failTask(task.id, reason)
+    queueFailureStrategy(task, repo, reason)
   } finally {
     isProcessing = false
   }
