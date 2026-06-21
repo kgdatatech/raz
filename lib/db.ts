@@ -455,6 +455,20 @@ export function getIssue(repoId: number, number: number): IssueRow | null {
   return (db.prepare(`SELECT * FROM issues WHERE repo_id = ? AND number = ?`).get(repoId, number) as IssueRow) ?? null
 }
 
+// Returns the most recent non-failed task for this issue, or null if none exists.
+// Used by the issue pipeline to skip issues that are already being worked on.
+export function getTaskForIssue(repoId: number, issueNumber: number): TaskRow | null {
+  return (db.prepare(`
+    SELECT * FROM tasks
+    WHERE repo_id = ? AND issue_number = ? AND status NOT IN ('failed')
+    ORDER BY created_at DESC LIMIT 1
+  `).get(repoId, issueNumber) as TaskRow) ?? null
+}
+
+export function setTaskIssueNumber(taskId: string, issueNumber: number): void {
+  db.prepare('UPDATE tasks SET issue_number = ? WHERE id = ?').run(issueNumber, taskId)
+}
+
 // ─── PR Status ────────────────────────────────────────────────────────────────
 
 export function savePrStatus(taskId: string, data: {
