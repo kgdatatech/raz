@@ -84,7 +84,7 @@ raziel/
 ## Database & Migrations
 
 - **File:** `lib/db.ts`
-- **Current schema version:** 10 (stored in `PRAGMA user_version`)
+- **Current schema version:** 11 (stored in `PRAGMA user_version`)
 - **Migration pattern:** `if (VERSION < N) { db.exec(...); db.exec('PRAGMA user_version = N') }`
 - **WAL mode + FK enforcement:** Set on startup
 - **Startup safety:** Tasks stuck in `running` are auto-failed on server restart
