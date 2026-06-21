@@ -556,6 +556,163 @@ export function getAllConfig(): Record<string, string> {
   return Object.fromEntries(rows.map((r) => [r.key, r.value]))
 }
 
+// ─── System Status ────────────────────────────────────────────────────────────
+
+export interface RoleStatusRow {
+  role:         string
+  total:        number
+  complete:     number
+  failed:       number
+  running:      number
+  queued:       number
+  success_rate: number
+}
+
+export interface RecentFailureRow {
+  id:           string
+  description:  string
+  role:         string
+  error:        string | null
+  completed_at: string | null
+  workflow:     string
+}
+
+export interface SystemStatus {
+  ts:       string
+  system: {
+    raz_mode:    string
+    task_paused: boolean
+  }
+  tasks: {
+    total:    number
+    queued:   number
+    running:  number
+    complete: number
+    failed:   number
+    h24: { total: number; complete: number; failed: number; success_rate: number }
+    d7:  { total: number; complete: number; failed: number; success_rate: number }
+  }
+  roles: RoleStatusRow[]
+  prs: {
+    open:       number
+    merged:     number
+    closed:     number
+    ci_failing: number
+  }
+  questions: {
+    pending: number
+    total:   number
+  }
+  recent_failures: RecentFailureRow[]
+}
+
+function calcSuccessRate(complete: number, failed: number): number {
+  const denominator = complete + failed
+  if (denominator === 0) return 0
+  return Math.round((complete / denominator) * 1000) / 10
+}
+
+export function getSystemStatus(): SystemStatus {
+  type TaskTotals = { total: number; queued: number; running: number; complete: number; failed: number }
+  type TaskWindow = { total: number; complete: number; failed: number }
+  type RoleRaw    = { role: string; total: number; complete: number; failed: number; running: number; queued: number }
+  type PrTotals   = { merged: number; open: number; closed: number; ci_failing: number }
+  type QTotals    = { total: number; pending: number }
+
+  const totals = db.prepare<[], TaskTotals>(`
+    SELECT
+      COUNT(*) as total,
+      COALESCE(SUM(CASE WHEN status='queued'   THEN 1 ELSE 0 END), 0) as queued,
+      COALESCE(SUM(CASE WHEN status='running'  THEN 1 ELSE 0 END), 0) as running,
+      COALESCE(SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END), 0) as complete,
+      COALESCE(SUM(CASE WHEN status='failed'   THEN 1 ELSE 0 END), 0) as failed
+    FROM tasks
+  `).get() as TaskTotals
+
+  const h24 = db.prepare<[], TaskWindow>(`
+    SELECT
+      COUNT(*) as total,
+      COALESCE(SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END), 0) as complete,
+      COALESCE(SUM(CASE WHEN status='failed'   THEN 1 ELSE 0 END), 0) as failed
+    FROM tasks
+    WHERE created_at >= datetime('now', '-1 day')
+  `).get() as TaskWindow
+
+  const d7 = db.prepare<[], TaskWindow>(`
+    SELECT
+      COUNT(*) as total,
+      COALESCE(SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END), 0) as complete,
+      COALESCE(SUM(CASE WHEN status='failed'   THEN 1 ELSE 0 END), 0) as failed
+    FROM tasks
+    WHERE created_at >= datetime('now', '-7 days')
+  `).get() as TaskWindow
+
+  const roleRows = db.prepare<[], RoleRaw>(`
+    SELECT
+      COALESCE(role, 'RAZ-Dev') as role,
+      COUNT(*) as total,
+      COALESCE(SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END), 0) as complete,
+      COALESCE(SUM(CASE WHEN status='failed'   THEN 1 ELSE 0 END), 0) as failed,
+      COALESCE(SUM(CASE WHEN status='running'  THEN 1 ELSE 0 END), 0) as running,
+      COALESCE(SUM(CASE WHEN status='queued'   THEN 1 ELSE 0 END), 0) as queued
+    FROM tasks
+    GROUP BY role
+    ORDER BY total DESC
+  `).all() as RoleRaw[]
+
+  const prs = db.prepare<[], PrTotals>(`
+    SELECT
+      COALESCE(SUM(CASE WHEN ps.merged=1                             THEN 1 ELSE 0 END), 0) as merged,
+      COALESCE(SUM(CASE WHEN ps.merged=0 AND ps.state='open'         THEN 1 ELSE 0 END), 0) as open,
+      COALESCE(SUM(CASE WHEN ps.merged=0 AND ps.state='closed'       THEN 1 ELSE 0 END), 0) as closed,
+      COALESCE(SUM(CASE WHEN ps.ci_status IN ('failure', 'error')    THEN 1 ELSE 0 END), 0) as ci_failing
+    FROM pr_status ps
+    INNER JOIN (
+      SELECT task_id, MAX(checked_at) as max_at FROM pr_status GROUP BY task_id
+    ) latest ON ps.task_id = latest.task_id AND ps.checked_at = latest.max_at
+  `).get() as PrTotals | undefined
+
+  const questions = db.prepare<[], QTotals>(`
+    SELECT
+      COUNT(*) as total,
+      COALESCE(SUM(CASE WHEN answered_at IS NULL THEN 1 ELSE 0 END), 0) as pending
+    FROM agent_questions
+  `).get() as QTotals
+
+  const recentFailures = db.prepare<[], RecentFailureRow>(`
+    SELECT
+      id,
+      description,
+      COALESCE(role, 'RAZ-Dev')       as role,
+      error,
+      completed_at,
+      COALESCE(workflow, 'feature')   as workflow
+    FROM tasks
+    WHERE status = 'failed'
+    ORDER BY completed_at DESC
+    LIMIT 10
+  `).all() as RecentFailureRow[]
+
+  const config = getAllConfig()
+
+  return {
+    ts: new Date().toISOString(),
+    system: {
+      raz_mode:    config['raz_mode']    ?? 'standard',
+      task_paused: config['task_paused'] === '1',
+    },
+    tasks: {
+      ...totals,
+      h24: { ...h24, success_rate: calcSuccessRate(h24.complete, h24.failed) },
+      d7:  { ...d7,  success_rate: calcSuccessRate(d7.complete,  d7.failed)  },
+    },
+    roles: roleRows.map((r) => ({ ...r, success_rate: calcSuccessRate(r.complete, r.failed) })),
+    prs:   prs ?? { merged: 0, open: 0, closed: 0, ci_failing: 0 },
+    questions,
+    recent_failures: recentFailures,
+  }
+}
+
 // Capture stale worktrees BEFORE marking as failed so agent-cc can clean them up on next start
 export const STALE_WORKTREES = db.prepare(`
   SELECT t.id, t.worktree_path, r.local_path AS repo_path

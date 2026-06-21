@@ -928,6 +928,10 @@ export default function RazDashboard() {
               <span className="text-xs text-gray-500">{owner}</span>
             </div>
           )}
+          <a href="/status" target="_blank" rel="noreferrer"
+            className="text-[9px] text-gray-400 hover:text-gray-700 transition-colors font-medium">
+            status ↗
+          </a>
         </div>
       </header>
 
