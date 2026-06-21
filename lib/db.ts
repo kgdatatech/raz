@@ -297,6 +297,18 @@ export function activateHandoffs(parentTaskId: string): void {
   db.prepare(`UPDATE tasks SET status = 'queued' WHERE parent_task_id = ? AND status = 'pending'`).run(parentTaskId)
 }
 
+export function hasRunningDuplicate(repoId: number, description: string, excludeId: string): boolean {
+  return !!db.prepare(
+    `SELECT id FROM tasks WHERE repo_id = ? AND description = ? AND status = 'running' AND id != ? LIMIT 1`
+  ).get(repoId, description, excludeId)
+}
+
+export function hasRecentCompletion(repoId: number, description: string, withinMinutes = 15): boolean {
+  return !!db.prepare(
+    `SELECT id FROM tasks WHERE repo_id = ? AND description = ? AND status = 'complete' AND completed_at > datetime('now', '-${withinMinutes} minutes') LIMIT 1`
+  ).get(repoId, description)
+}
+
 export function savePlan(taskId: string, plan: string) {
   db.prepare(`UPDATE tasks SET plan = ? WHERE id = ?`).run(plan, taskId)
 }

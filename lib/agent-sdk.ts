@@ -225,6 +225,8 @@ function buildSystemPrompt(params: {
 You work on real production codebases. You are methodical, thorough, and security-obsessed.
 You think before you act and always verify your work before declaring it complete.
 
+MEMORY-FIRST RULE: Call list_memory as your FIRST action every task. Use what prior agents discovered before reading any files. Only read files when memory is insufficient. This is mandatory — it prevents redundant work and saves tokens.
+
 ══════════════════════════════════════
 ARCHON SYSTEMS CONTEXT
 ══════════════════════════════════════
@@ -483,12 +485,20 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     let buildVerified   = false
     let securityClean   = false
     const extraGatesMet = new Map<string, boolean>(roleDefinition.extraGates.map((g) => [g, false]))
-    let totalInputTokens  = 0
-    let totalOutputTokens = 0
+    let totalInputTokens        = 0
+    let totalOutputTokens       = 0
+    let totalCacheReadTokens    = 0
+    let totalCacheCreationTokens = 0
     const recentCalls: string[] = []
 
-    const INPUT_COST_PER_M  = 3.00
-    const OUTPUT_COST_PER_M = 15.00
+    const INPUT_COST_PER_M         = 3.00
+    const OUTPUT_COST_PER_M        = 15.00
+    const CACHE_READ_COST_PER_M    = 0.30
+    const CACHE_WRITE_COST_PER_M   = 3.75
+
+    const systemBlock: Anthropic.TextBlockParam[] = [
+      { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+    ]
 
     while (iterations < maxIterations) {
       iterations++
@@ -499,7 +509,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
         () => anthropic.messages.create({
           model:      'claude-sonnet-4-6',
           max_tokens: 8096,
-          system:     systemPrompt,
+          system:     systemBlock,
           tools:      roleTools as unknown as Anthropic.Tool[],
           messages,
         }),
@@ -513,11 +523,18 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       const toolUses   = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
       const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text')
 
-      totalInputTokens  += response.usage.input_tokens
-      totalOutputTokens += response.usage.output_tokens
-      const costUsd = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
+      const usage = response.usage as Anthropic.Usage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+      totalInputTokens         += usage.input_tokens
+      totalOutputTokens        += usage.output_tokens
+      totalCacheReadTokens     += usage.cache_read_input_tokens    ?? 0
+      totalCacheCreationTokens += usage.cache_creation_input_tokens ?? 0
 
-      onEvent({ type: 'usage', message: `~$${costUsd.toFixed(4)}`, data: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, costUsd } })
+      const costUsd = (totalInputTokens / 1_000_000) * INPUT_COST_PER_M
+        + (totalOutputTokens / 1_000_000) * OUTPUT_COST_PER_M
+        + (totalCacheReadTokens / 1_000_000) * CACHE_READ_COST_PER_M
+        + (totalCacheCreationTokens / 1_000_000) * CACHE_WRITE_COST_PER_M
+
+      onEvent({ type: 'usage', message: `~$${costUsd.toFixed(4)}`, data: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheReadTokens: totalCacheReadTokens, costUsd } })
 
       if (textBlocks.length > 0) {
         onEvent({ type: 'thinking', message: textBlocks.map((b) => b.text).join('\n') })
