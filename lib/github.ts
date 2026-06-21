@@ -86,8 +86,18 @@ export async function getPRStatus(owner: string, repo: string, prNumber: number)
 
   const approved  = [...latestReviews.values()].filter((s) => s === 'APPROVED').length
   const rejected  = [...latestReviews.values()].filter((s) => s === 'CHANGES_REQUESTED').length
-  const ciPassing = checks.every((c) => c.conclusion === 'success' || c.conclusion === 'skipped')
-  const ciStatus  = checks.length === 0 ? 'no_checks' : ciPassing ? 'passing' : 'failing'
+
+  // Distinguish pending (still running) from failing (completed with failure)
+  // conclusion is null while a check is still in_progress/queued
+  const pendingChecks = checks.filter((c) => c.conclusion === null)
+  const failedChecks  = checks.filter(
+    (c) => c.conclusion !== null && c.conclusion !== 'success' && c.conclusion !== 'skipped',
+  )
+  let ciStatus: 'no_checks' | 'passing' | 'pending' | 'failing'
+  if (checks.length === 0)        ciStatus = 'no_checks'
+  else if (pendingChecks.length)  ciStatus = 'pending'
+  else if (failedChecks.length)   ciStatus = 'failing'
+  else                            ciStatus = 'passing'
 
   return {
     prNumber,
@@ -98,6 +108,7 @@ export async function getPRStatus(owner: string, repo: string, prNumber: number)
     approvals:      approved,
     rejections:     rejected,
     ciStatus,
+    failingChecks:  failedChecks.map((c) => `${c.name}: ${c.conclusion}`),
     checkCount:     checks.length,
     url:            pr.html_url,
   }

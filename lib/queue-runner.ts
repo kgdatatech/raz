@@ -13,54 +13,165 @@ import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from './roles'
 let isProcessing = false
 let started      = false
 
+// Max number of CI wait retries before giving up (5s queue tick × 90 = 7.5 min)
+const CI_WAIT_MAX = 90
+
+function parseCIWaitRetry(description: string): number {
+  const match = description.match(/CI wait #(\d+):/)
+  return match ? parseInt(match[1]) : 1
+}
+
+// ── Merge + post-merge audit ──────────────────────────────────────────────────
+// Shared by both handleReviewGate and handleCIGate to avoid duplication.
+async function performMerge(
+  prNumber:     number,
+  parentTaskId: string,
+  callerTaskId: string,
+  repo:         RepoRow,
+): Promise<void> {
+  const parentTask = getTask(parentTaskId)
+  await mergePR(repo.github_owner, repo.github_repo, prNumber)
+  try { execSync(`git fetch origin`, { cwd: repo.local_path!, stdio: 'pipe' }) } catch {}
+  activateHandoffs(parentTaskId)
+
+  const auditId = randomUUID()
+  createQueuedTask(
+    auditId,
+    repo.id,
+    `Post-merge audit: PR #${prNumber} (${parentTask?.role ?? 'RAZ-Dev'}) — ${parentTask?.description.slice(0, 50) ?? ''}`,
+    `razqa/audit-${prNumber}-${auditId.slice(0, 6)}`,
+    'audit',
+    'RAZ-QA',
+    callerTaskId,
+    'queued',
+  )
+}
+
+// ── CI gate ───────────────────────────────────────────────────────────────────
+// Called instead of running an agent when workflow='ci_wait'.
+// Checks CI status and either merges, waits another tick, or queues a fix task.
+async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: number): Promise<void> {
+  const parentTaskId = task.parent_task_id!
+  const parentTask   = getTask(parentTaskId)
+  const status       = await getPRStatus(repo.github_owner, repo.github_repo, prNumber)
+
+  if (status.merged) {
+    activateHandoffs(parentTaskId)
+    return
+  }
+
+  if (status.ciStatus === 'passing' || status.ciStatus === 'no_checks') {
+    await performMerge(prNumber, parentTaskId, task.id, repo)
+    return
+  }
+
+  if (status.ciStatus === 'pending') {
+    const retry = parseCIWaitRetry(task.description) + 1
+    if (retry <= CI_WAIT_MAX) {
+      const waitId = randomUUID()
+      createQueuedTask(
+        waitId,
+        repo.id,
+        `CI wait #${retry}: PR #${prNumber} — ${parentTask?.description.slice(0, 50) ?? ''}`,
+        `ci-wait/${prNumber}-${waitId.slice(0, 6)}`,
+        'ci_wait',
+        'RAZ-Ops',
+        parentTaskId,
+        'queued',
+      )
+    } else {
+      // Timed out — give up and queue a fix task
+      const fixId = randomUUID()
+      createQueuedTask(
+        fixId,
+        repo.id,
+        `Fix PR #${prNumber} CI timeout after ${Math.round(CI_WAIT_MAX * 5 / 60)} min: ${parentTask?.description.slice(0, 50) ?? ''}`,
+        `raz-dev/fix-ci-timeout-${prNumber}-${fixId.slice(0, 6)}`,
+        'fix',
+        'RAZ-Dev',
+        task.id,
+        'queued',
+      )
+    }
+    return
+  }
+
+  // ciStatus === 'failing' — queue RAZ-Dev fix with check names
+  const fixId    = randomUUID()
+  const failInfo = status.failingChecks.length > 0
+    ? ` [${status.failingChecks.slice(0, 3).join(', ')}]`
+    : ''
+  createQueuedTask(
+    fixId,
+    repo.id,
+    `Fix PR #${prNumber} CI failures${failInfo}: ${parentTask?.description.slice(0, 50) ?? ''}`,
+    `raz-dev/fix-ci-${prNumber}-${fixId.slice(0, 6)}`,
+    'fix',
+    'RAZ-Dev',
+    task.id,
+    'queued',
+  )
+}
+
 // ── Pre-merge gate ────────────────────────────────────────────────────────────
-// Called after a workflow='review' task completes. Checks the GitHub PR verdict
-// and either merges the PR (approved) or queues a RAZ-Dev fix (changes requested).
+// Called after a workflow='review' task completes. Checks QA verdict then CI.
 async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<void> {
   if (task.workflow !== 'review' || !task.parent_task_id) return
 
   const parentTask = getTask(task.parent_task_id)
   if (!parentTask?.pr_url) return
 
-  const match = parentTask.pr_url.match(/\/pull\/(\d+)/)
+  const match    = parentTask.pr_url.match(/\/pull\/(\d+)/)
   const prNumber = match ? parseInt(match[1]) : 0
   if (!prNumber) return
 
   const status = await getPRStatus(repo.github_owner, repo.github_repo, prNumber)
 
   if (status.merged) {
-    // User already merged manually — activate dev task's handoffs and move on
     activateHandoffs(parentTask.id)
     return
   }
 
-  if (status.state === 'closed') {
-    // PR was closed without merging — nothing to do
-    return
-  }
+  if (status.state === 'closed') return
 
   if (status.approvals > 0 && status.rejections === 0) {
-    // Approved — merge, activate parent handoffs, queue post-merge audit
-    await mergePR(repo.github_owner, repo.github_repo, prNumber)
-    try { execSync(`git fetch origin`, { cwd: repo.local_path!, stdio: 'pipe' }) } catch {}
-
-    activateHandoffs(parentTask.id)
-
-    const auditId = randomUUID()
-    createQueuedTask(
-      auditId,
-      repo.id,
-      `Post-merge audit: PR #${prNumber} (${parentTask.role ?? 'RAZ-Dev'}) — ${parentTask.description.slice(0, 50)}`,
-      `razqa/audit-${prNumber}-${auditId.slice(0, 6)}`,
-      'audit',
-      'RAZ-QA',
-      task.id,
-      'queued',
-    )
+    // QA approved — now check CI before merging
+    if (status.ciStatus === 'passing' || status.ciStatus === 'no_checks') {
+      await performMerge(prNumber, parentTask.id, task.id, repo)
+    } else if (status.ciStatus === 'pending') {
+      // CI still running — queue a lightweight poller, no agent needed
+      const waitId = randomUUID()
+      createQueuedTask(
+        waitId,
+        repo.id,
+        `CI wait #1: PR #${prNumber} — ${parentTask.description.slice(0, 60)}`,
+        `ci-wait/${prNumber}-${waitId.slice(0, 6)}`,
+        'ci_wait',
+        'RAZ-Ops',
+        parentTask.id,
+        'queued',
+      )
+    } else {
+      // CI is already failing — skip the wait, queue fix immediately with check names
+      const fixId    = randomUUID()
+      const failInfo = status.failingChecks.length > 0
+        ? ` [${status.failingChecks.slice(0, 3).join(', ')}]`
+        : ''
+      createQueuedTask(
+        fixId,
+        repo.id,
+        `Fix PR #${prNumber} CI failures${failInfo}: ${parentTask.description.slice(0, 50)}`,
+        `raz-dev/fix-ci-${prNumber}-${fixId.slice(0, 6)}`,
+        'fix',
+        'RAZ-Dev',
+        task.id,
+        'queued',
+      )
+    }
   } else {
-    // Changes requested or no approval verdict — queue RAZ-Dev fix task
-    const fixId  = randomUUID()
-    const reason = task.summary?.slice(0, 200) ?? 'Review requested changes — see GitHub PR for details.'
+    // QA requested changes — queue RAZ-Dev fix
+    const fixId   = randomUUID()
+    const reason  = task.summary?.slice(0, 200) ?? 'Review requested changes — see GitHub PR for details.'
     createQueuedTask(
       fixId,
       repo.id,
@@ -94,6 +205,24 @@ async function processQueue(): Promise<void> {
   }
   if (hasRecentCompletion(repo.id, task.description)) {
     failTask(task.id, 'Skipped — identical task completed within the last 15 minutes')
+    return
+  }
+
+  // ci_wait tasks are handled directly — no agent needed
+  if (task.workflow === 'ci_wait' && task.parent_task_id) {
+    isProcessing = true
+    resetTaskToRunning(task.id)
+    try {
+      const parentTask = getTask(task.parent_task_id)
+      const match      = parentTask?.pr_url?.match(/\/pull\/(\d+)/)
+      const prNumber   = match ? parseInt(match[1]) : 0
+      if (prNumber) await handleCIGate(task, repo, prNumber)
+      completeTask(task.id, null, `CI gate check — ${task.description}`, [])
+    } catch (err) {
+      failTask(task.id, `CI gate error: ${err}`)
+    } finally {
+      isProcessing = false
+    }
     return
   }
 
@@ -153,7 +282,6 @@ async function processQueue(): Promise<void> {
       const files   = (completionData.files_changed as string[]) ?? []
 
       if (commitsAhead === 0) {
-        // No code changes — complete immediately and activate any handoffs
         completeTask(task.id, null, summary, [])
         await handleReviewGate(task, repo)
         activateHandoffs(task.id)
@@ -185,10 +313,9 @@ async function processQueue(): Promise<void> {
       const prNumber = parseInt(prUrl.split('/').pop() ?? '0', 10)
       if (prNumber) {
         if (task.workflow === 'review') {
-          // This task was itself a review — shouldn't have commits, but handle gracefully
           await handleReviewGate(task, repo)
         } else {
-          // Normal dev task — queue pre-merge review instead of merging immediately
+          // Queue pre-merge review — handoffs stay pending until after review + CI pass
           const reviewId = randomUUID()
           createQueuedTask(
             reviewId,
@@ -200,7 +327,6 @@ async function processQueue(): Promise<void> {
             task.id,
             'queued',
           )
-          // Handoffs activate after the review passes and the PR merges (see handleReviewGate)
         }
       }
     } else if (completionData?.commit_skipped) {
