@@ -62,7 +62,7 @@ Skip the handoff ONLY for pure doc/comment/config-only changes where no code log
     badge:            'SEC',
     allowedTools: [
       ...READ_TOOLS, 'security_scan', 'dependency_audit', 'generate_report',
-      'list_open_prs', 'review_pr',
+      'list_open_prs', 'get_pr_summary', 'get_pr_file_diff',
       'handoff_to_role',
     ],
     buildRequired:    false,
@@ -98,7 +98,7 @@ Workflow: use 'fix' if the issues are concrete code changes, 'feature' if new in
     allowedTools: [
       ...READ_TOOLS, 'write_file', 'execute_bash', 'run_build', 'run_tests',
       'run_lint', 'check_coverage', 'generate_report',
-      'list_open_prs', 'review_pr', 'post_pr_review',
+      'list_open_prs', 'get_pr_summary', 'get_pr_file_diff', 'post_pr_review',
       'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    true,
@@ -118,12 +118,13 @@ Always call run_tests and check_coverage. Report pass rates, coverage percentage
 CODE REVIEW WORKFLOW (when workflow=audit or task description contains "Code review: PR #N"):
 1. Call get_memory first — understand what the codebase does and what this change is part of
 2. Parse the PR number from your task description (e.g. "Code review: PR #7" → pr_number=7)
-3. Call review_pr with that number — read ALL files changed, the full diff, and CI status
-4. Read the key changed files with read_file to understand context beyond the diff
-5. Evaluate: correctness, TypeScript safety, security, test coverage, performance, consistency with codebase patterns
+3. Call get_pr_summary with that number — read the file list, CI status, and description (~1KB)
+4. For each file that warrants inspection, call get_pr_file_diff(pr_number, filename) — one file at a time
+   Focus on: logic-bearing files first, skip generated files, lock files, and assets
+5. Evaluate each file: correctness, TypeScript safety, security, test coverage, performance
 6. Call post_pr_review with your verdict:
    - "approve" if the PR is clean — summarize what was done and confirm quality
-   - "request_changes" if there are real issues — list each one with severity and exact fix needed
+   - "request_changes" if there are real issues — list each one with file/line, severity, and exact fix
    - "comment" if the PR is merged already — still post your review for the record
 7. Call generate_report with detailed findings
 8. If issues found → handoff_to_role: RAZ-Dev, workflow: fix, with exact issue list
@@ -144,7 +145,7 @@ HANDOFF RULES — mandatory after task_complete:
     badge:            'OPS',
     allowedTools: [
       ...READ_TOOLS, 'execute_bash', 'run_build', 'generate_report',
-      'list_open_prs', 'review_pr',
+      'list_open_prs', 'get_pr_summary', 'get_pr_file_diff',
       'delegate_to_role', 'handoff_to_role',
     ],
     buildRequired:    false,

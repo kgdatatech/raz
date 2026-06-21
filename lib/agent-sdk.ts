@@ -162,14 +162,51 @@ async function callWithBackoff(
 }
 
 // ── Context files ─────────────────────────────────────────────────────────────
+const FILE_CAP = 4_000
+
 function readContextFiles(repoPath: string): string {
-  const files = ['CLAUDE.md', 'AGENTS.md', 'README.md', '.raziel/context.md']
+  // README excluded — too large/generic; agents use AGENTS.md for repo rules
+  const files = ['CLAUDE.md', 'AGENTS.md', '.raziel/context.md']
   const parts: string[] = []
   for (const file of files) {
     const p = path.join(repoPath, file)
-    if (fs.existsSync(p)) parts.push(`=== ${file} ===\n${fs.readFileSync(p, 'utf-8')}`)
+    if (!fs.existsSync(p)) continue
+    const raw = fs.readFileSync(p, 'utf-8')
+    const capped = raw.length > FILE_CAP ? raw.slice(0, FILE_CAP) + `\n[…${file} truncated at ${FILE_CAP} chars]` : raw
+    parts.push(`=== ${file} ===\n${capped}`)
   }
   return parts.join('\n\n')
+}
+
+// ── Message compression ────────────────────────────────────────────────────────
+function compressMessages(messages: Anthropic.MessageParam[], keepTurns = 6): Anthropic.MessageParam[] {
+  const cutoff = messages.length - keepTurns * 2
+  if (cutoff <= 1) return messages
+
+  return messages.map((msg, i) => {
+    if (i === 0 || i >= cutoff) return msg
+
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      const content = (msg.content as Anthropic.ToolResultBlockParam[]).map((block) => {
+        if (block.type !== 'tool_result') return block
+        const text = typeof block.content === 'string' ? block.content : ''
+        if (text.length <= 300) return block
+        return { ...block, content: `${text.slice(0, 300)}\n[…${text.length - 300} chars compressed]` }
+      })
+      return { role: 'user' as const, content }
+    }
+
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const content = (msg.content as Anthropic.ContentBlock[]).map((block) => {
+        if (block.type !== 'text') return block
+        if (block.text.length <= 400) return block
+        return { ...block, text: `${block.text.slice(0, 400)}\n[…compressed]` }
+      })
+      return { role: 'assistant' as const, content }
+    }
+
+    return msg
+  })
 }
 
 // ── System prompt ─────────────────────────────────────────────────────────────
@@ -186,12 +223,13 @@ function buildSystemPrompt(params: {
 }): string {
   const { context, memory, pastTasks, workflow, roleContext, issueContent, isResume, parentRole, chatContext } = params
 
-  const memoryBlock = Object.keys(memory).length > 0
-    ? `\n\nREPO MEMORY (what you know about this codebase):\n${Object.entries(memory).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
+  const memEntries = Object.entries(memory).slice(0, 15)
+  const memoryBlock = memEntries.length > 0
+    ? `\n\nREPO MEMORY:\n${memEntries.map(([k, v]) => `- ${k}: ${v.slice(0, 150)}`).join('\n')}`
     : ''
 
   const historyBlock = pastTasks.length > 0
-    ? `\n\nRECENT TASK HISTORY (last ${pastTasks.length} tasks on this repo):\n${pastTasks.map((t) => `- [${t.status}] [${t.workflow ?? 'feature'}] ${t.description}${t.summary ? ` → ${t.summary}` : ''}`).join('\n')}`
+    ? `\n\nRECENT TASKS:\n${pastTasks.map((t) => `- [${t.status}] ${t.role ?? 'RAZ-Dev'}/${t.workflow ?? 'feature'}: ${t.description.slice(0, 60)}${t.summary ? ` → ${t.summary.slice(0, 60)}` : ''}`).join('\n')}`
     : ''
 
   const issueBlock = issueContent
@@ -322,7 +360,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
   const {
     taskId, repoPath, description, branch, workflow,
     role, repoId, issueNumber, github, checkpointMessages,
-    parentRole, maxIterations = 40, existingWorktree,
+    parentRole, maxIterations = 20, existingWorktree,
   } = task
 
   const roleDefinition = ROLES[role ?? DEFAULT_ROLE]
@@ -340,7 +378,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
 
     const context    = readContextFiles(repoPath)
     const memory     = repoId ? getMemory(repoId) : {}
-    const pastTasks  = repoId ? listTasks(repoId).slice(0, 10) : []
+    const pastTasks  = repoId ? listTasks(repoId).slice(0, 5) : []
 
     let issueContent: string | undefined
     if (issueNumber && repoId) {
@@ -410,7 +448,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
           existingWorktree: worktreePath ?? undefined,
           parentTaskId:     taskId,
           parentRole:       role,
-          maxIterations:    20,
+          maxIterations:    8,
         },
         (event) => {
           onEvent({
@@ -504,6 +542,26 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       iterations++
 
       if (signal?.aborted) { onEvent({ type: 'error', message: 'Task cancelled.' }); return }
+
+      // Compress message history every 8 turns to prevent context window blowout
+      if (iterations % 8 === 0 && messages.length > 12) {
+        const compressed = compressMessages(messages, 6)
+        messages.length = 0
+        messages.push(...compressed)
+        onEvent({ type: 'thinking', message: `[context] Compressed message history at turn ${iterations} — keeping last 6 turns verbatim.` })
+      }
+
+      // Budget checkpoint: warn agent when 75% of budget consumed
+      if (iterations === Math.floor(maxIterations * 0.75)) {
+        const last = messages[messages.length - 1]
+        if (last?.role === 'user' && Array.isArray(last.content)) {
+          ;(last.content as Anthropic.ToolResultBlockParam[]).push({
+            type: 'tool_result',
+            tool_use_id: 'budget_checkpoint',
+            content: `⚠ BUDGET: Turn ${iterations} of ${maxIterations}. You have ~${maxIterations - iterations} turns left. If all critical changes are done, call security_scan then task_complete now.`,
+          } as Anthropic.ToolResultBlockParam)
+        }
+      }
 
       const response = await callWithBackoff(
         () => anthropic.messages.create({

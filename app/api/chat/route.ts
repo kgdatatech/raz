@@ -259,7 +259,9 @@ async function runSDKChat(
   const lastMsg = messages[messages.length - 1]
   if (repoId != null && lastMsg?.role === 'user') saveChatMessage(repoId, 'user', lastMsg.content)
 
-  const loopMessages: Anthropic.MessageParam[] = messages.map((m) => ({
+  // Trim history before API call — full history stays in DB/UI
+  const recentMessages = messages.slice(-20)
+  const loopMessages: Anthropic.MessageParam[] = recentMessages.map((m) => ({
     role:    m.role as 'user' | 'assistant',
     content: m.content,
   }))

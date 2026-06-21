@@ -180,6 +180,18 @@ export async function getPRDiff(owner: string, repo: string, prNumber: number): 
   return String(res.data).slice(0, 40_000)
 }
 
+export async function getPRFileDiff(owner: string, repo: string, prNumber: number, filename: string): Promise<string> {
+  const { data } = await octokit.pulls.listFiles({ owner, repo, pull_number: prNumber, per_page: 100 })
+  const file = data.find((f) => f.filename === filename)
+  if (!file) return `File "${filename}" not found in PR #${prNumber}. Use get_pr_summary to see the file list.`
+  return [
+    `File: ${file.filename}`,
+    `Status: ${file.status}  +${file.additions}/-${file.deletions} lines`,
+    '',
+    file.patch ?? '(no patch — binary file or diff too large for GitHub API)',
+  ].join('\n').slice(0, 8_000)
+}
+
 export async function createPRReview(
   owner: string,
   repo: string,

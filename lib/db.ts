@@ -401,11 +401,14 @@ export interface MemoryRow {
   updated_at: string
 }
 
+const MEMORY_VALUE_MAX = 400
+
 export function setMemory(repoId: number, key: string, value: string) {
+  const capped = value.length > MEMORY_VALUE_MAX ? value.slice(0, MEMORY_VALUE_MAX) + '…' : value
   db.prepare(`
     INSERT INTO memory (repo_id, key, value) VALUES (?, ?, ?)
     ON CONFLICT(repo_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `).run(repoId, key, value)
+  `).run(repoId, key, capped)
 }
 
 export function getMemory(repoId: number): Record<string, string> {
@@ -595,14 +598,17 @@ export function clearChatMessages(repoId: number): void {
   db.prepare(`DELETE FROM chat_messages WHERE repo_id = ?`).run(repoId)
 }
 
-export function getRecentChatContext(repoId: number, limit = 12): string {
+export function getRecentChatContext(repoId: number, limit = 6): string {
   const msgs = db.prepare(
-    `SELECT role, content FROM chat_messages WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?`
-  ).all(repoId, limit) as { role: string; content: string }[]
+    `SELECT role, content, created_at FROM chat_messages WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?`
+  ).all(repoId, limit) as { role: string; content: string; created_at: string }[]
   if (msgs.length === 0) return ''
+  // Skip stale context — chat older than 30 min is noise for agents
+  const ageMs = Date.now() - new Date(msgs[0]!.created_at).getTime()
+  if (ageMs > 30 * 60 * 1000) return ''
   return msgs
     .reverse()
-    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 600)}`)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 250)}`)
     .join('\n\n')
 }
 
