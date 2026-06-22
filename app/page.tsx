@@ -430,8 +430,9 @@ export default function RazDashboard() {
   const startRef       = useRef<number>(0)
   const timerRef       = useRef<ReturnType<typeof setInterval> | null>(null)
   const queueRef       = useRef<QueueItem[]>([])
-  const panelResizeRef = useRef<{ startY: number; startH: number } | null>(null)
-  const [panelH,       setPanelH]       = useState(224)
+  const panelResizeRef  = useRef<{ startY: number; startH: number } | null>(null)
+  const bottomPanelRef  = useRef<HTMLDivElement>(null)
+  const [panelH,        setPanelH]       = useState<number | null>(null)
 
   useEffect(() => { queueRef.current = queue }, [queue])
 
@@ -922,7 +923,8 @@ export default function RazDashboard() {
   }
 
   function startPanelResize(e: React.MouseEvent) {
-    panelResizeRef.current = { startY: e.clientY, startH: panelH }
+    const currentH = panelH ?? bottomPanelRef.current?.offsetHeight ?? 300
+    panelResizeRef.current = { startY: e.clientY, startH: currentH }
     const onMove = (ev: MouseEvent) => {
       if (!panelResizeRef.current) return
       const delta = panelResizeRef.current.startY - ev.clientY
@@ -1462,7 +1464,7 @@ export default function RazDashboard() {
           </div>
 
           {/* Bottom panel */}
-          <div className="flex-shrink-0 border-gray-200 flex flex-col" style={{ height: panelH }}>
+          <div ref={bottomPanelRef} className={`border-gray-200 flex flex-col ${panelH === null ? 'flex-1 min-h-0' : 'flex-shrink-0'}`} style={panelH !== null ? { height: panelH } : undefined}>
             {/* Drag-to-resize handle */}
             <div onMouseDown={startPanelResize}
               className="h-1.5 flex-shrink-0 bg-gray-100 hover:bg-indigo-300 cursor-row-resize transition-colors border-t border-gray-200 group flex items-center justify-center">
