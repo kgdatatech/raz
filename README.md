@@ -147,6 +147,7 @@ The agent log streams in real time. When done, a PR link appears in the log head
 | **Comms** | All inter-agent delegations and handoffs. |
 | **Issues** | GitHub issues synced to local DB. Click "→ Use as task" to populate the input. |
 | **Reports** | Markdown reports from RAZ-Sec and RAZ-Ops. |
+| **Brain** | Live graph of repos, tasks, and memory connections — visualizes how agents are building knowledge over time. |
 
 ---
 
