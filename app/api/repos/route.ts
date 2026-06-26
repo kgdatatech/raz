@@ -11,7 +11,7 @@ export async function GET() {
     const { data: ghRepos } = await octokit.repos.listForAuthenticatedUser({
       per_page: 100,
       sort:     'updated',
-      type:     'owner',
+      type:     'all',
     })
 
     // Upsert each into local DB

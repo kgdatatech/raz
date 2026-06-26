@@ -1149,7 +1149,13 @@ export default function RazDashboard() {
                   )}
                   {selectedRepo && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
-                      <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">{selectedRepo.default_branch}</span>
+                      <span
+                        onClick={() => setShowOptions(true)}
+                        title="Click to change target branch"
+                        className={`text-[9px] rounded-full px-2 py-0.5 cursor-pointer transition-colors ${baseBranch && baseBranch !== selectedRepo.default_branch ? 'bg-indigo-100 text-indigo-600 font-semibold' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                      >
+                        {baseBranch || selectedRepo.default_branch}
+                      </span>
                       {selectedRepo.local_path
                         ? <span className="text-[9px] bg-gray-100 text-gray-500 rounded-full px-2 py-0.5 font-mono truncate max-w-[200px]">{selectedRepo.local_path}</span>
                         : <span className="text-[9px] bg-amber-50 text-amber-700 rounded-full px-2 py-0.5 border border-amber-200">⚠ path not set — expand Options below</span>
@@ -1288,6 +1294,11 @@ export default function RazDashboard() {
                         <input value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)}
                           placeholder={loadingBranches ? 'Loading branches…' : selectedRepo.default_branch}
                           className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900" />
+                      )}
+                      {baseBranch && baseBranch !== selectedRepo.default_branch && (
+                        <p className="text-[8px] text-indigo-600 mt-1">
+                          PR will target <span className="font-mono font-semibold">{baseBranch}</span> instead of <span className="font-mono">{selectedRepo.default_branch}</span>
+                        </p>
                       )}
                     </div>
                   )}
@@ -1448,7 +1459,7 @@ export default function RazDashboard() {
                           : entry.type === 'plan'
                           ? <span className="text-indigo-500 font-medium cursor-pointer hover:underline" onClick={() => setPlanOpen(true)}>Plan created → view</span>
                           : entry.type === 'complete'
-                          ? entry.message.slice(0, 300)
+                          ? <span className="font-medium">{(() => { const first = entry.message.split('\n')[0]; return first.length > 120 ? first.slice(0, 120) + '…' : entry.message.includes('\n') ? first + '…' : first })()} </span>
                           : entry.message}
                       </span>
                     </div>
@@ -2167,7 +2178,7 @@ export default function RazDashboard() {
                           {entry.type === 'tool_call'
                             ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? <span className="text-gray-600"> — {JSON.stringify(entry.data.input).slice(0, 100)}</span> : ''}</>
                             : entry.type === 'complete'
-                              ? entry.message.slice(0, 300)
+                              ? (() => { const first = entry.message.split('\n')[0]; return first.length > 120 ? first.slice(0, 120) + '…' : entry.message.includes('\n') ? first + '…' : first })()
                               : entry.message}
                         </span>
                       </div>
