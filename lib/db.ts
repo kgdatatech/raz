@@ -184,6 +184,13 @@ if (VERSION < 12) {
   db.exec('PRAGMA user_version = 12')
 }
 
+if (VERSION < 13) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN runner TEXT`) } catch {}
+  const defaultRunner = process.env.RAZ_RUNNER === 'cc' ? 'claude_code' : 'sdk'
+  db.prepare(`INSERT OR IGNORE INTO system_config (key, value) VALUES ('agent_runner', ?)`).run(defaultRunner)
+  db.exec('PRAGMA user_version = 13')
+}
+
 // ─── Priority ─────────────────────────────────────────────────────────────────
 
 export const PRIORITY = {
@@ -213,6 +220,7 @@ export interface TaskRow {
   workflow:       string
   role:           string
   priority:       number
+  runner:         string | null
   issue_number:   number | null
   plan:           string | null
   pr_url:         string | null
@@ -288,11 +296,12 @@ export function createTask(
   workflow = 'feature',
   issueNumber?: number,
   role = 'RAZ-Dev',
+  runner?: string | null,
 ): TaskRow {
   db.prepare(`
-    INSERT INTO tasks (id, repo_id, description, branch, workflow, issue_number, role)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, repoId, description, branch, workflow, issueNumber ?? null, role)
+    INSERT INTO tasks (id, repo_id, description, branch, workflow, issue_number, role, runner)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, repoId, description, branch, workflow, issueNumber ?? null, role, runner ?? null)
   return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow
 }
 
@@ -306,11 +315,12 @@ export function createQueuedTask(
   parentTaskId?: string,
   status:   'queued' | 'pending' = 'queued',
   priority: PriorityLevel = PRIORITY.NORMAL,
+  runner?:  string | null,
 ): TaskRow {
   db.prepare(`
-    INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id, priority)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, repoId, description, branch, workflow, role, status, parentTaskId ?? null, priority)
+    INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id, priority, runner)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, repoId, description, branch, workflow, role, status, parentTaskId ?? null, priority, runner ?? null)
   return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow
 }
 
@@ -687,8 +697,9 @@ export interface RecentFailureRow {
 export interface SystemStatus {
   ts:       string
   system: {
-    raz_mode:    string
-    task_paused: boolean
+    raz_mode:     string
+    task_paused:  boolean
+    agent_runner: string
   }
   tasks: {
     total:    number
@@ -805,8 +816,9 @@ export function getSystemStatus(): SystemStatus {
   return {
     ts: new Date().toISOString(),
     system: {
-      raz_mode:    config['raz_mode']    ?? 'standard',
-      task_paused: config['task_paused'] === '1',
+      raz_mode:     config['raz_mode']    ?? 'standard',
+      task_paused:  config['task_paused'] === '1',
+      agent_runner: config['agent_runner'] ?? (process.env.RAZ_RUNNER === 'cc' ? 'claude_code' : 'sdk'),
     },
     tasks: {
       ...totals,

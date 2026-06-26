@@ -9,6 +9,7 @@ import {
 import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
 import { seedMemoryTasks } from './memory-tasks'
 import { runAgent } from './agent'
+import { getActiveAgentRunner, normalizeAgentRunner } from './agent'
 import { pushBranchAndOpenPR, mergePR, getPRStatus } from './github'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from './roles'
 
@@ -21,6 +22,14 @@ const CI_WAIT_MAX = 90
 
 // Workflows that should NOT trigger a failure strategy (to prevent infinite loops)
 const NO_RETRY_WORKFLOWS = new Set(['strategy', 'review', 'audit', 'ci_wait'])
+
+function taskRunner(...tasks: Array<Pick<TaskRow, 'runner'> | null | undefined>): string {
+  for (const task of tasks) {
+    const runner = normalizeAgentRunner(task?.runner)
+    if (runner) return runner
+  }
+  return getActiveAgentRunner()
+}
 
 export function shouldQueueFailureStrategy(workflow: string | null): boolean {
   return !NO_RETRY_WORKFLOWS.has(workflow ?? '')
@@ -39,6 +48,7 @@ export function queueFailureStrategy(task: TaskRow, repo: RepoRow, reason: strin
     task.id,
     'queued',
     PRIORITY.HIGH,
+    taskRunner(task),
   )
 }
 
@@ -70,6 +80,8 @@ async function performMerge(
     'RAZ-QA',
     callerTaskId,
     'queued',
+    PRIORITY.NORMAL,
+    taskRunner(parentTask),
   )
 }
 
@@ -104,6 +116,8 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
         'RAZ-Ops',
         parentTaskId,
         'queued',
+        PRIORITY.NORMAL,
+        taskRunner(parentTask, task),
       )
     } else {
       // Timed out — give up and queue a fix task
@@ -118,6 +132,7 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
         task.id,
         'queued',
         PRIORITY.HIGH,
+        taskRunner(parentTask, task),
       )
     }
     return
@@ -138,6 +153,7 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
     task.id,
     'queued',
     PRIORITY.CRITICAL,
+    taskRunner(parentTask, task),
   )
 }
 
@@ -178,6 +194,8 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
         'RAZ-Ops',
         parentTask.id,
         'queued',
+        PRIORITY.NORMAL,
+        taskRunner(parentTask, task),
       )
     } else {
       // CI is already failing — skip the wait, queue fix immediately (CRITICAL: blocks merge)
@@ -195,6 +213,7 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
         task.id,
         'queued',
         PRIORITY.CRITICAL,
+        taskRunner(parentTask, task),
       )
     }
   } else {
@@ -211,6 +230,7 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
       task.id,
       'queued',
       PRIORITY.HIGH,
+      taskRunner(parentTask, task),
     )
   }
 }
@@ -220,7 +240,8 @@ async function processQueue(): Promise<void> {
   if (isProcessing) return
 
   const mode = getConfig('raz_mode') ?? 'standard'
-  if (mode !== 'autonomous') return
+  if (mode === 'standard') return
+  if (getConfig('task_paused') === '1') return
 
   const task = getNextQueuedTask()
   if (!task) {
@@ -291,6 +312,7 @@ async function processQueue(): Promise<void> {
         repoId:      repo.id,
         github:      { owner: repo.github_owner, repo: repo.github_repo },
         baseBranch:  repo.default_branch,
+        runner:      taskRunner(task),
       },
       (event) => {
         if (event.type !== 'tool_result') logBuffer.push({ ...event, ts: Date.now() })
@@ -367,6 +389,8 @@ async function processQueue(): Promise<void> {
             'RAZ-QA',
             task.id,
             'queued',
+            PRIORITY.NORMAL,
+            taskRunner(task),
           )
         }
       }

@@ -5,6 +5,8 @@ import path from 'path'
 import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
 import { getRepoById, listMemoryRows, listTasks, saveChatMessage } from '@/lib/db'
+import { resolveClaudeSpawn } from '@/lib/claude-bin'
+import { getActiveAgentRunner } from '@/lib/agent'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -186,10 +188,12 @@ async function runCCChat(
     '--allowedTools', 'Read,Glob,Grep',
   ]
 
-  const claudeProc = spawn('claude', claudeArgs, {
+  const { exe, args, shell } = resolveClaudeSpawn(claudeArgs)
+  const claudeProc = spawn(exe, args, {
     cwd:   repoPath ?? process.cwd(),
     env:   { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'],
+    shell,
   })
 
   if (signal.aborted) { claudeProc.kill('SIGTERM'); return }
@@ -235,9 +239,13 @@ async function runCCChat(
       }
     })
 
-    claudeProc.stderr?.on('data', () => {})
+    let stderrOut = ''
+    claudeProc.stderr?.on('data', (chunk: Buffer) => { stderrOut += chunk.toString() })
     claudeProc.on('error', reject)
-    claudeProc.on('close', resolve)
+    claudeProc.on('close', (code) => {
+      if (!fullText && stderrOut) send({ type: 'error', message: `claude exited (${code ?? '?'}): ${stderrOut.slice(0, 500)}` })
+      resolve()
+    })
   })
 
   if (fullText && repoId != null) saveChatMessage(repoId, 'assistant', fullText)
@@ -318,7 +326,7 @@ export async function POST(req: NextRequest) {
   const repo     = repoId != null ? getRepoById(repoId) : null
   const repoPath = repo?.local_path ?? null
   const system   = buildSystemPrompt(repo, repoPath, repoId)
-  const useCC    = process.env.RAZ_RUNNER === 'cc'
+  const runner   = getActiveAgentRunner()
 
   const encoder = new TextEncoder()
   const abort   = new AbortController()
@@ -335,8 +343,10 @@ export async function POST(req: NextRequest) {
       }, 25_000)
 
       try {
-        if (useCC) {
+        if (runner === 'claude_code') {
           await runCCChat(system, messages, repoPath, repoId, send, abort.signal)
+        } else if (runner === 'codex') {
+          send({ type: 'error', message: 'Codex chat runner is not implemented yet. Switch to Claude SDK or Claude Code.' })
         } else {
           await runSDKChat(system, messages, repoPath, repoId, send, abort.signal)
         }

@@ -3,6 +3,7 @@ import path from 'path'
 import os from 'os'
 import { spawn } from 'child_process'
 import { execSync } from 'child_process'
+import { resolveClaudeSpawn } from './claude-bin'
 import { randomUUID } from 'crypto'
 import {
   getIssue,
@@ -291,7 +292,7 @@ function cleanupStaleWorktrees() {
 export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?: AbortSignal): Promise<void> {
   const {
     taskId, repoPath, description, branch, workflow,
-    role, repoId, issueNumber, github, parentRole, existingWorktree,
+    role, repoId, issueNumber, github, parentRole, existingWorktree, runner,
     baseBranch = 'master',
   } = task
 
@@ -370,10 +371,12 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       ? ['--resume', savedSession, '-p', 'Continue from where you left off. Review what was already done and proceed with remaining steps.', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
       : ['-p', taskPrompt, '--system-prompt', systemPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
 
-    const claudeProc = spawn('claude', claudeArgs, {
+    const { exe, args, shell } = resolveClaudeSpawn(claudeArgs)
+    const claudeProc = spawn(exe, args, {
       cwd:   isWslPath(worktreePath!) ? undefined : worktreePath!,
       env:   { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      shell,
     })
 
     if (signal) {
@@ -468,7 +471,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
 
       if (repoId) {
         const { createTask } = await import('./db')
-        createTask(subTaskId, repoId, req.description, branch, subWf, undefined, subRole)
+        createTask(subTaskId, repoId, req.description, branch, subWf, undefined, subRole, runner ?? 'claude_code')
         setTaskParent(subTaskId, taskId)
       }
       const msgId = repoId ? createAgentMessage({ repoId, fromRole: role ?? DEFAULT_ROLE, toRole: subRole, fromTaskId: taskId, toTaskId: subTaskId, messageType: 'delegation', message: req.description }) : undefined
@@ -476,7 +479,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       let subSummary = 'Sub-agent completed.'; let subFailed = false
 
       await runAgent(
-        { taskId: subTaskId, repoPath, description: req.description, branch, workflow: subWf, role: subRole, repoId, github, existingWorktree: worktreePath!, parentTaskId: taskId, parentRole: role, maxIterations: 20 },
+        { taskId: subTaskId, repoPath, description: req.description, branch, workflow: subWf, role: subRole, repoId, github, existingWorktree: worktreePath!, parentTaskId: taskId, parentRole: role, maxIterations: 20, runner: runner ?? 'claude_code' },
         (ev) => {
           onEvent({ ...ev, message: `[${subRole}] ${ev.message}`, data: { ...ev.data, delegated: true, delegateRole: subRole } })
           if (ev.type === 'complete') subSummary = ev.message

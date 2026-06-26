@@ -29,6 +29,7 @@ export interface AgentTask {
   maxIterations?:      number
   existingWorktree?:   string  // when set, skip worktree creation (used by sub-agents)
   baseBranch?:         string  // default branch name — worktrees branch from origin/<baseBranch>
+  runner?:             string  // persisted execution source for history/retry/delegation continuity
 }
 
 export interface AgentEvent {
@@ -360,7 +361,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
   const {
     taskId, repoPath, description, branch, workflow,
     role, repoId, issueNumber, github, checkpointMessages,
-    parentRole, maxIterations = 20, existingWorktree,
+    parentRole, maxIterations = 20, existingWorktree, runner,
   } = task
 
   const roleDefinition = ROLES[role ?? DEFAULT_ROLE]
@@ -413,7 +414,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
 
       if (repoId) {
         const { createTask } = await import('./db')
-        createTask(subTaskId, repoId, params.description, branch, subWf, undefined, subRole)
+        createTask(subTaskId, repoId, params.description, branch, subWf, undefined, subRole, runner ?? 'sdk')
         if (taskId) setTaskParent(subTaskId, taskId)
       }
 
@@ -449,6 +450,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
           parentTaskId:     taskId,
           parentRole:       role,
           maxIterations:    8,
+          runner:           runner ?? 'sdk',
         },
         (event) => {
           onEvent({

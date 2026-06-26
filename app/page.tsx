@@ -59,6 +59,7 @@ interface TaskRow {
   status:         string
   workflow:       string
   role:           string | null
+  runner:         string | null
   issue_number:   number | null
   plan:           string | null
   pr_url:         string | null
@@ -121,7 +122,14 @@ interface ChatMsg {
   toolName?: string
 }
 
-const CC_MODE = process.env.NEXT_PUBLIC_RAZ_RUNNER === 'cc'
+type AgentRunner = 'sdk' | 'claude_code' | 'codex'
+
+interface AgentRunnerOption {
+  id:        AgentRunner
+  label:     string
+  available: boolean
+  reason?:   string
+}
 
 const WORKFLOWS = [
   { value: 'feature',  label: 'Feature'      },
@@ -412,6 +420,11 @@ export default function RazDashboard() {
   const [pendingQuestionId,  setPendingQuestionId]  = useState<string | null>(null)
   const [razMode,            setRazMode]            = useState<'standard' | 'supervised' | 'autonomous'>('standard')
   const [isPaused,           setIsPaused]           = useState(false)
+  const [agentRunner,        setAgentRunner]        = useState<AgentRunner>('sdk')
+  const [runnerOptions,      setRunnerOptions]      = useState<AgentRunnerOption[]>([])
+  const [baseBranch,         setBaseBranch]         = useState('')
+  const [repoBranches,       setRepoBranches]       = useState<string[]>([])
+  const [loadingBranches,    setLoadingBranches]    = useState(false)
   const [showOptions,        setShowOptions]        = useState(false)
   const [showQuickTasks,     setShowQuickTasks]     = useState(false)
   const [chatMessages,       setChatMessages]       = useState<ChatMsg[]>([])
@@ -451,6 +464,8 @@ export default function RazDashboard() {
       .then((cfg) => {
         if (cfg.raz_mode) setRazMode(cfg.raz_mode as 'standard' | 'supervised' | 'autonomous')
         if (cfg.task_paused) setIsPaused(cfg.task_paused === '1')
+        if (cfg.agent_runner) setAgentRunner(cfg.agent_runner as AgentRunner)
+        if (Array.isArray(cfg.available_agent_runners)) setRunnerOptions(cfg.available_agent_runners as AgentRunnerOption[])
       })
       .catch(() => {})
   }, [])
@@ -471,6 +486,14 @@ export default function RazDashboard() {
     loadAllIssues(selectedRepo.id, 'open')
     loadReports()
     loadChatHistory(selectedRepo.id)
+    setBaseBranch(selectedRepo.default_branch)
+    setRepoBranches([])
+    setLoadingBranches(true)
+    fetch(`/api/repos/branches?owner=${selectedRepo.github_owner}&repo=${selectedRepo.github_repo}`)
+      .then((r) => r.json())
+      .then(({ branches }: { branches?: string[] }) => { if (Array.isArray(branches)) setRepoBranches(branches) })
+      .catch(() => {})
+      .finally(() => setLoadingBranches(false))
   }, [selectedRepo])
 
   useEffect(() => {
@@ -699,7 +722,7 @@ export default function RazDashboard() {
     if (entry.type === 'ask_user' && entry.data?.questionId) {
       setPendingQuestionId(entry.data.questionId as string)
     }
-    if (CC_MODE) {
+    if (agentRunner === 'claude_code') {
       if (entry.type === 'error' && entry.data?.rateLimited) {
         const resetAt = entry.data.resetAt as string | undefined
         setRateLimitResetAt(resetAt ? new Date(resetAt) : new Date(Date.now() + 3_600_000))
@@ -762,6 +785,7 @@ export default function RazDashboard() {
           owner: selectedRepo.github_owner, repo: selectedRepo.github_repo,
           description: params.description, workflow: params.workflow,
           role: params.role, issueNumber: params.issueNumber, resumeTaskId: params.resumeTaskId,
+          baseBranch: baseBranch || selectedRepo.default_branch,
         }),
       })
 
@@ -912,6 +936,27 @@ export default function RazDashboard() {
     await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'raz_mode', value: mode }) }).catch(() => {})
   }
 
+  async function changeAgentRunner(runner: AgentRunner) {
+    const option = runnerOptions.find((item) => item.id === runner)
+    if (option && !option.available) return
+    const previous = agentRunner
+    setAgentRunner(runner)
+    const res = await fetch('/api/config', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ key: 'agent_runner', value: runner }),
+    }).catch(() => null)
+    if (!res?.ok) {
+      setAgentRunner(previous)
+      const data = await res?.json().catch(() => null) as { error?: string } | null
+      alert(data?.error ?? 'Could not change agent runner.')
+      return
+    }
+    const data = await res.json().catch(() => null) as { agent_runner?: AgentRunner; available_agent_runners?: AgentRunnerOption[] } | null
+    if (data?.agent_runner) setAgentRunner(data.agent_runner)
+    if (data?.available_agent_runners) setRunnerOptions(data.available_agent_runners)
+  }
+
   async function handlePause() {
     setIsPaused(true)
     await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'task_paused', value: '1' }) }).catch(() => {})
@@ -1032,6 +1077,20 @@ export default function RazDashboard() {
                 {label}
               </button>
             ))}
+          </div>
+          {/* Runner toggle */}
+          <div className="flex items-center border border-gray-200 rounded overflow-hidden">
+            {(['sdk', 'claude_code', 'codex'] as const).map((r) => {
+              const opt     = runnerOptions.find((o) => o.id === r)
+              const unavail = opt !== undefined && !opt.available
+              const label   = r === 'claude_code' ? 'CC' : r === 'codex' ? 'Codex' : 'SDK'
+              return (
+                <button key={r} onClick={() => changeAgentRunner(r)} disabled={unavail} title={opt?.reason ?? label}
+                  className={`px-2.5 py-1 text-[9px] font-semibold tracking-wide transition-colors ${unavail ? 'opacity-40 cursor-not-allowed text-gray-400' : agentRunner === r ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>
+                  {label}
+                </button>
+              )
+            })}
           </div>
           {owner && (
             <div className="flex items-center gap-1.5">
@@ -1216,6 +1275,23 @@ export default function RazDashboard() {
                     </div>
                   </div>
 
+                  {/* Base branch selector */}
+                  {selectedRepo && (
+                    <div>
+                      <label className="block text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-1.5">Base Branch</label>
+                      {repoBranches.length > 0 ? (
+                        <select value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)}
+                          className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] text-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900">
+                          {repoBranches.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                      ) : (
+                        <input value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)}
+                          placeholder={loadingBranches ? 'Loading branches…' : selectedRepo.default_branch}
+                          className="w-full bg-white border border-gray-200 rounded-md px-2.5 py-1.5 text-[10px] font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900" />
+                      )}
+                    </div>
+                  )}
+
                   {/* Issue picker (only for fix workflow) */}
                   {workflow === 'fix' && selectedRepo && (
                     <div>
@@ -1319,7 +1395,7 @@ export default function RazDashboard() {
                   </>
                 )}
                 {prUrl && <a href={prUrl} target="_blank" rel="noreferrer" className="text-[10px] text-green-700 font-semibold underline underline-offset-2">✓ View PR ↗</a>}
-                {CC_MODE
+                {agentRunner === 'claude_code'
                   ? rateLimitResetAt && rateLimitSecondsLeft > 0
                     ? <span className="text-[10px] font-mono text-amber-500">limit — {Math.floor(rateLimitSecondsLeft / 60)}m {String(rateLimitSecondsLeft % 60).padStart(2, '0')}s</span>
                     : null
@@ -1371,6 +1447,8 @@ export default function RazDashboard() {
                           ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? ` — ${JSON.stringify(entry.data.input).slice(0, 120)}` : ''}</>
                           : entry.type === 'plan'
                           ? <span className="text-indigo-500 font-medium cursor-pointer hover:underline" onClick={() => setPlanOpen(true)}>Plan created → view</span>
+                          : entry.type === 'complete'
+                          ? entry.message.slice(0, 300)
                           : entry.message}
                       </span>
                     </div>
@@ -1869,7 +1947,7 @@ export default function RazDashboard() {
                 <div className="flex items-center gap-2.5">
                   <span className={`w-2 h-2 rounded-full ${STATUS_DOT[selectedTask.status] ?? 'bg-gray-300'}`} />
                   <span className={`text-xs font-bold uppercase tracking-wide ${STATUS_TEXT[selectedTask.status] ?? 'text-gray-500'}`}>{selectedTask.status}</span>
-                  <span className="text-xs text-gray-400">{selectedTask.role ?? 'RAZ-Dev'} · {selectedTask.workflow ?? 'feature'}</span>
+                  <span className="text-xs text-gray-400">{selectedTask.role ?? 'RAZ-Dev'} · {selectedTask.workflow ?? 'feature'}{selectedTask.runner ? ` · ${selectedTask.runner}` : ''}</span>
                   {selectedTask.issue_number && <span className="text-xs text-indigo-500">Issue #{selectedTask.issue_number}</span>}
                   {selectedTask.parent_task_id && <span className="text-[9px] text-violet-500 bg-violet-50 rounded px-1.5 py-0.5">↳ delegated</span>}
                 </div>
@@ -2088,7 +2166,9 @@ export default function RazDashboard() {
                         <span className="flex-1 break-all [overflow-wrap:anywhere] min-w-0">
                           {entry.type === 'tool_call'
                             ? <><span className="font-semibold">{entry.message}</span>{entry.data?.input ? <span className="text-gray-600"> — {JSON.stringify(entry.data.input).slice(0, 100)}</span> : ''}</>
-                            : entry.message}
+                            : entry.type === 'complete'
+                              ? entry.message.slice(0, 300)
+                              : entry.message}
                         </span>
                       </div>
                     ))}

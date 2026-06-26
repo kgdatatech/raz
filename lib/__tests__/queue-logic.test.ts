@@ -55,8 +55,10 @@ function makeTask(overrides: Partial<TaskRow> = {}): TaskRow {
     parent_task_id: 'dev-task-id',
     created_at:     new Date().toISOString(),
     completed_at:   null,
+    priority:       1,
+    runner:         'sdk',
     ...overrides,
-  }
+  } as TaskRow
 }
 
 function makeParentTask(overrides: Partial<TaskRow> = {}): TaskRow {

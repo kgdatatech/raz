@@ -50,8 +50,10 @@ function makeTask(overrides: Partial<TaskRow> = {}): TaskRow {
     parent_task_id: null,
     created_at:     new Date().toISOString(),
     completed_at:   null,
+    priority:       1,
+    runner:         'sdk',
     ...overrides,
-  }
+  } as TaskRow
 }
 
 // ── shouldQueueFailureStrategy ────────────────────────────────────────────────
@@ -98,6 +100,7 @@ describe('queueFailureStrategy()', () => {
     expect(call[2]).toContain('Build feature X')
     expect(call[2]).toContain('Agent did not reach task_complete')
     expect(call[6]).toBe('task-id') // parent_task_id links back to failed task
+    expect(call[9]).toBe('sdk')
   })
 
   it('sets status to queued', () => {

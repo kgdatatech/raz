@@ -25,8 +25,9 @@ interface RecentFailure {
 interface StatusData {
   ts: string
   system: {
-    raz_mode:    string
-    task_paused: boolean
+    raz_mode:     string
+    task_paused:  boolean
+    agent_runner: string
   }
   tasks: {
     total:    number
@@ -335,6 +336,10 @@ export default function StatusPage(): React.ReactElement {
                   <span className={`text-[10px] font-bold ${system.task_paused ? 'text-amber-500' : 'text-green-600'}`}>
                     {system.task_paused ? 'Paused' : 'Active'}
                   </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-gray-500">Runner</span>
+                  <span className="text-[10px] font-bold text-gray-700">{system.agent_runner}</span>
                 </div>
               </div>
             </div>

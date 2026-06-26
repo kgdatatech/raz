@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
-import { runAgent } from '@/lib/agent'
+import { getActiveAgentRunner, normalizeAgentRunner, runAgent } from '@/lib/agent'
 import { pushBranchAndOpenPR, mergePR } from '@/lib/github'
 import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId, getConfig, activateHandoffs } from '@/lib/db'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from '@/lib/roles'
@@ -10,7 +10,7 @@ export const runtime    = 'nodejs'
 export const maxDuration = 300
 
 export async function POST(req: NextRequest) {
-  const { owner, repo, description, workflow = 'feature', issueNumber, role: rawRole, resumeTaskId } = await req.json()
+  const { owner, repo, description, workflow = 'feature', issueNumber, role: rawRole, resumeTaskId, baseBranch: bodyBaseBranch } = await req.json()
   const role: RoleId = ROLE_IDS.includes(rawRole) ? rawRole : DEFAULT_ROLE
 
   if (!owner || !repo || !description) {
@@ -23,10 +23,11 @@ export async function POST(req: NextRequest) {
   }
 
   const repoPath   = repoRow.local_path
-  const baseBranch = repoRow.default_branch
+  const baseBranch = bodyBaseBranch?.trim() || repoRow.default_branch
 
   let taskId: string
   let branch: string
+  let runner = getActiveAgentRunner()
   let checkpointMessages: unknown[] | null = null
 
   if (resumeTaskId) {
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
     }
     taskId = resumeTaskId
     branch = existing.branch
+    runner = normalizeAgentRunner(existing.runner) ?? runner
     // Only carry checkpoint messages for interrupted tasks — completed tasks restart clean
     if (existing.status !== 'complete') {
       checkpointMessages = getTaskMessages(resumeTaskId)
@@ -49,7 +51,7 @@ export async function POST(req: NextRequest) {
     const roleSlug = role.toLowerCase().slice(0, 12)
     branch         = `${roleSlug}/${taskSlug}-${taskId.slice(0, 6)}`.slice(0, 50)
     upsertRepo(owner, repo, baseBranch, repoPath)
-    createTask(taskId, repoRow.id, description, branch, workflow, issueNumber, role)
+    createTask(taskId, repoRow.id, description, branch, workflow, issueNumber, role, runner)
   }
 
   const encoder    = new TextEncoder()
@@ -99,6 +101,7 @@ export async function POST(req: NextRequest) {
             github:             { owner, repo },
             checkpointMessages: checkpointMessages ?? undefined,
             baseBranch,
+            runner,
           },
           (event) => {
             send(event)

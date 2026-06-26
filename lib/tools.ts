@@ -2,13 +2,23 @@ import fs from 'fs'
 import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import { setMemory, savePlan } from './db'
+import { getConfig, setMemory, savePlan } from './db'
 import {
   fetchIssue, listOpenIssues, listOpenPRs,
   getPRDetails, getPRFileDiff, createPRReview,
 } from './github'
 
 const execAsync = promisify(exec)
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitWhilePaused(): Promise<void> {
+  while (getConfig('task_paused') === '1') {
+    await sleep(1_000)
+  }
+}
 
 // Env passed to all child processes — strips RAZ's own secrets so agents can't echo them
 function safeEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
@@ -458,6 +468,7 @@ export async function executeTool(
   input: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<string> {
+  await waitWhilePaused()
   const { worktreePath, repoId, taskId, github } = ctx
 
   switch (name) {
