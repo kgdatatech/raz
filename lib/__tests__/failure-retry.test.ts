@@ -1,7 +1,8 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest'
+import type * as DbModule from '../db'
 
 vi.mock('../db', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../db')>()
+  const actual = await importOriginal<typeof DbModule>()
   return {
     ...actual,
     getTask:          vi.fn(),

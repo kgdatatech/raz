@@ -1,10 +1,11 @@
 import { vi, describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import type * as DbModule from '../db'
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 // Declared before any imports so Vitest can hoist them via vi.mock().
 
 vi.mock('../db', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../db')>()
+  const actual = await importOriginal<typeof DbModule>()
   return {
     ...actual,
     getConfig:           vi.fn(),

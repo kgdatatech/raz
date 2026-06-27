@@ -1,9 +1,10 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest'
+import type * as DbModule from '../db'
 
 // Mock db and github BEFORE queue-runner is imported so the gate handlers
 // use the mocked versions, not the real SQLite / Octokit calls.
 vi.mock('../db', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../db')>()
+  const actual = await importOriginal<typeof DbModule>()
   return {
     ...actual,
     getTask:          vi.fn(),
