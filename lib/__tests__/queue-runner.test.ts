@@ -8,11 +8,11 @@ vi.mock('../db', async (importOriginal) => {
   return {
     ...actual,
     getConfig:           vi.fn(),
-    getNextQueuedTask:   vi.fn(),
+    claimNextQueuedTask: vi.fn(),
+    heartbeatTask:       vi.fn(),
     getRepoById:         vi.fn(),
     getTask:             vi.fn(),
     listRepos:           vi.fn(),
-    resetTaskToRunning:  vi.fn(),
     completeTask:        vi.fn(),
     failTask:            vi.fn(),
     saveTaskLog:         vi.fn(),
@@ -32,6 +32,7 @@ vi.mock('../github', () => ({
 vi.mock('../agent', () => ({
   runAgent:             vi.fn(),
   getActiveAgentRunner: vi.fn(() => 'sdk'),
+  isAgentRunnerAvailable: vi.fn(() => true),
   normalizeAgentRunner: vi.fn(() => null),
 }))
 
@@ -52,8 +53,8 @@ vi.mock('child_process', () => ({
 
 import { startQueueRunner } from '../queue-runner'
 import {
-  getConfig, getNextQueuedTask, getRepoById, getTask, listRepos,
-  resetTaskToRunning, completeTask, failTask, saveTaskLog, activateHandoffs,
+  getConfig, claimNextQueuedTask, getRepoById, getTask, listRepos,
+  completeTask, failTask, saveTaskLog, activateHandoffs,
   hasRunningDuplicate, hasRecentCompletion, createQueuedTask,
 } from '../db'
 import { runAgent } from '../agent'
@@ -109,14 +110,13 @@ function makeParentTask(overrides: Partial<TaskRow> = {}): TaskRow {
   })
 }
 
-function makePRStatus(overrides: Partial<{
-  merged: boolean; state: string; approvals: number
-  rejections: number; ciStatus: string; failingChecks: string[]
-}> = {}) {
+function makePRStatus(
+  overrides: Partial<Awaited<ReturnType<typeof getPRStatus>>> = {},
+): Awaited<ReturnType<typeof getPRStatus>> {
   return {
     prNumber: 42, state: 'open', merged: false, title: 'Feature X',
     reviewDecision: 'none', approvals: 0, rejections: 0,
-    ciStatus: 'passing' as const, failingChecks: [] as string[],
+    ciStatus: 'passing', failingChecks: [] as string[],
     checkCount: 1, url: 'https://github.com/owner/repo/pull/42',
     ...overrides,
   }
@@ -178,7 +178,7 @@ describe('processQueue()', () => {
       if (key === 'raz_mode') return 'auto'
       return null
     })
-    vi.mocked(getNextQueuedTask).mockReturnValue(null)
+    vi.mocked(claimNextQueuedTask).mockReturnValue(null)
     vi.mocked(listRepos).mockReturnValue([])
     vi.mocked(getRepoById).mockReturnValue(REPO)
     vi.mocked(getTask).mockReturnValue(null)
@@ -196,13 +196,13 @@ describe('processQueue()', () => {
     it('skips when raz_mode is "standard"', async () => {
       vi.mocked(getConfig).mockReturnValue('standard')
       await vi.advanceTimersByTimeAsync(5_000)
-      expect(getNextQueuedTask).not.toHaveBeenCalled()
+      expect(claimNextQueuedTask).not.toHaveBeenCalled()
     })
 
     it('skips when raz_mode is null (defaults to "standard")', async () => {
       vi.mocked(getConfig).mockReturnValue(null)
       await vi.advanceTimersByTimeAsync(5_000)
-      expect(getNextQueuedTask).not.toHaveBeenCalled()
+      expect(claimNextQueuedTask).not.toHaveBeenCalled()
     })
 
     it('skips when task_paused is "1"', async () => {
@@ -212,12 +212,12 @@ describe('processQueue()', () => {
         return null
       })
       await vi.advanceTimersByTimeAsync(5_000)
-      expect(getNextQueuedTask).not.toHaveBeenCalled()
+      expect(claimNextQueuedTask).not.toHaveBeenCalled()
     })
 
     it('proceeds to poll the queue when mode is "auto" and not paused', async () => {
       await vi.advanceTimersByTimeAsync(5_000)
-      expect(getNextQueuedTask).toHaveBeenCalled()
+      expect(claimNextQueuedTask).toHaveBeenCalled()
     })
   })
 
@@ -247,7 +247,7 @@ describe('processQueue()', () => {
 
   describe('dedup guards', () => {
     it('fails the task when an identical task is already running', async () => {
-      vi.mocked(getNextQueuedTask).mockReturnValue(makeTask())
+      vi.mocked(claimNextQueuedTask).mockReturnValue(makeTask())
       vi.mocked(hasRunningDuplicate).mockReturnValue(true)
       await vi.advanceTimersByTimeAsync(5_000)
       expect(failTask).toHaveBeenCalledWith('task-1', 'Skipped — identical task already running')
@@ -255,7 +255,7 @@ describe('processQueue()', () => {
     })
 
     it('fails the task when an identical task completed recently', async () => {
-      vi.mocked(getNextQueuedTask).mockReturnValue(makeTask())
+      vi.mocked(claimNextQueuedTask).mockReturnValue(makeTask())
       vi.mocked(hasRecentCompletion).mockReturnValue(true)
       await vi.advanceTimersByTimeAsync(5_000)
       expect(failTask).toHaveBeenCalledWith(
@@ -264,20 +264,20 @@ describe('processQueue()', () => {
       expect(runAgent).not.toHaveBeenCalled()
     })
 
-    it('silently skips when the repo cannot be found', async () => {
-      vi.mocked(getNextQueuedTask).mockReturnValue(makeTask())
+    it('fails a claimed task when the repo cannot be found', async () => {
+      vi.mocked(claimNextQueuedTask).mockReturnValue(makeTask())
       vi.mocked(getRepoById).mockReturnValue(null)
       await vi.advanceTimersByTimeAsync(5_000)
       expect(runAgent).not.toHaveBeenCalled()
-      expect(failTask).not.toHaveBeenCalled()
+      expect(failTask).toHaveBeenCalledWith('task-1', 'Repository is missing a configured local path')
     })
 
-    it('silently skips when the repo has no local_path', async () => {
-      vi.mocked(getNextQueuedTask).mockReturnValue(makeTask())
+    it('fails a claimed task when the repo has no local_path', async () => {
+      vi.mocked(claimNextQueuedTask).mockReturnValue(makeTask())
       vi.mocked(getRepoById).mockReturnValue({ ...REPO, local_path: null })
       await vi.advanceTimersByTimeAsync(5_000)
       expect(runAgent).not.toHaveBeenCalled()
-      expect(failTask).not.toHaveBeenCalled()
+      expect(failTask).toHaveBeenCalledWith('task-1', 'Repository is missing a configured local path')
     })
   })
 
@@ -293,14 +293,14 @@ describe('processQueue()', () => {
     })
 
     beforeEach(() => {
-      vi.mocked(getNextQueuedTask).mockReturnValue(CI_TASK)
+      vi.mocked(claimNextQueuedTask).mockReturnValue(CI_TASK)
       vi.mocked(getTask).mockReturnValue(makeParentTask())
       vi.mocked(getPRStatus).mockResolvedValue(makePRStatus())
     })
 
     it('marks task running, runs the CI gate, then completes', async () => {
       await vi.advanceTimersByTimeAsync(5_000)
-      expect(resetTaskToRunning).toHaveBeenCalledWith('ci-wait-1')
+      expect(claimNextQueuedTask).toHaveBeenCalled()
       expect(getPRStatus).toHaveBeenCalled()
       expect(completeTask).toHaveBeenCalledWith(
         'ci-wait-1', null, expect.stringContaining('CI gate check'), [],
@@ -329,13 +329,13 @@ describe('processQueue()', () => {
 
   describe('regular agent task', () => {
     beforeEach(() => {
-      vi.mocked(getNextQueuedTask).mockReturnValue(makeTask())
+      vi.mocked(claimNextQueuedTask).mockReturnValue(makeTask())
     })
 
     it('marks the task running and passes correct params to runAgent', async () => {
       vi.mocked(runAgent).mockResolvedValue(undefined)
       await vi.advanceTimersByTimeAsync(5_000)
-      expect(resetTaskToRunning).toHaveBeenCalledWith('task-1')
+      expect(claimNextQueuedTask).toHaveBeenCalled()
       expect(runAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           taskId:      'task-1',

@@ -164,7 +164,7 @@ The agent log streams in real time. When done, a PR link appears in the log head
 Every new RAZ feature ships with tests. RAZ-QA will `request_changes` on any PR that doesn't include them — the PR does not merge until tests are added.
 
 ```bash
-npm test           # 202 tests, all must pass
+npm test           # 335 tests, all must pass
 npm run test:watch # interactive
 ```
 
