@@ -172,7 +172,10 @@ export async function getPRDetails(owner: string, repo: string, prNumber: number
 }
 
 export async function mergePR(owner: string, repo: string, prNumber: number, method: 'merge' | 'squash' | 'rebase' = 'squash'): Promise<void> {
-  await octokit.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: method })
+  const response = await octokit.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: method })
+  if (!response.data.merged) {
+    throw new Error(response.data.message || `GitHub did not merge PR #${prNumber}`)
+  }
 }
 
 export async function closePR(owner: string, repo: string, prNumber: number): Promise<void> {

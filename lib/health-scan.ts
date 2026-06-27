@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import {
-  listIssues, createQueuedTask, hasRecentCompletion,
+  listIssues, createQueuedTask, hasActiveDuplicate, hasRecentCompletion,
   type RepoRow,
 } from './db'
 import { type RoleId } from './roles'
@@ -23,7 +23,7 @@ export function scanTodos(repoPath: string): HealthFinding[] {
   let raw = ''
   try {
     raw = execSync(
-      `git grep -rn "TODO\\|FIXME" -- "*.ts" "*.tsx" ":!node_modules"`,
+      `git grep -n "TODO\\|FIXME" -- "*.ts" "*.tsx" ":!**/__tests__/**" ":!**/*.test.ts" ":!**/*.test.tsx"`,
       { cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] },
     )
   } catch (e: unknown) {
@@ -74,7 +74,7 @@ export function scanMissingTests(repoPath: string): HealthFinding[] {
         description: `Add tests for lib/${file} — no test file found`,
         role:        'RAZ-QA',
         workflow:    'test',
-        branch:      `razqa/health-test-${base.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+        branch:      `razqa/health-test-${base.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${randomUUID().slice(0, 6)}`,
       })
     }
   }
@@ -111,13 +111,14 @@ export async function seedHealthTasks(repo: RepoRow): Promise<number> {
 
   for (const finding of findings) {
     // Dedup: skip if an identical task ran recently or is already queued
-    if (hasRecentCompletion(repo.id, finding.description)) continue
+    if (hasActiveDuplicate(repo.id, finding.description) || hasRecentCompletion(repo.id, finding.description)) continue
 
+    const taskId = randomUUID()
     createQueuedTask(
-      randomUUID(),
+      taskId,
       repo.id,
       finding.description,
-      finding.branch,
+      `${finding.branch}-${taskId.slice(0, 6)}`.slice(0, 100),
       finding.workflow,
       finding.role,
     )

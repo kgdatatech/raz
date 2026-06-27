@@ -164,7 +164,7 @@ The agent log streams in real time. When done, a PR link appears in the log head
 Every new RAZ feature ships with tests. RAZ-QA will `request_changes` on any PR that doesn't include them — the PR does not merge until tests are added.
 
 ```bash
-npm test           # 178 tests, all must pass
+npm test           # 202 tests, all must pass
 npm run test:watch # interactive
 ```
 
@@ -172,7 +172,10 @@ npm run test:watch # interactive
 
 ## Security constraints
 
-Agents run inside an isolated git worktree. They cannot read `.env` files, make outbound HTTP calls from tools, or escape the worktree path. `security_scan` runs on every changed file before a task can complete.
+Agents run inside an isolated git worktree. SDK file tools block secret paths and
+path traversal, shell commands reject chaining operators, and GitHub credentials
+are removed from the Claude Code process environment. `security_scan` runs on
+every changed file before a task can complete.
 
 ---
 

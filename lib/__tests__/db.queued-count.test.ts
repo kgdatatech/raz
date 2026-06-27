@@ -11,6 +11,8 @@ vi.hoisted(() => {
 
 import db, {
   countQueuedTasks,
+  claimNextQueuedTask,
+  completeTask,
   createQueuedTask,
   createTask,
   upsertRepo,
@@ -78,5 +80,47 @@ describe('countQueuedTasks()', () => {
     expect(typeof result).toBe('number')
     expect(result).not.toBeNaN()
     expect(result).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('claimNextQueuedTask()', () => {
+  beforeEach(() => {
+    db.prepare('DELETE FROM tasks').run()
+    db.prepare('DELETE FROM repos').run()
+  })
+
+  it('atomically gives a queued task to only one worker', () => {
+    const repo = upsertRepo('owner', 'repo', 'main')
+    createQueuedTask('claim-me', repo.id, 'claim once', 'branch')
+
+    const first = claimNextQueuedTask('worker-a')
+    const second = claimNextQueuedTask('worker-b')
+
+    expect(first?.id).toBe('claim-me')
+    expect(first?.status).toBe('running')
+    expect(first?.worker_id).toBe('worker-a')
+    expect(first?.attempt).toBe(1)
+    expect(second).toBeNull()
+  })
+
+  it('clears lease ownership and stale errors when completed', () => {
+    const repo = upsertRepo('owner', 'repo', 'main')
+    createQueuedTask('finish-me', repo.id, 'finish once', 'branch')
+    claimNextQueuedTask('worker-a')
+    db.prepare(`UPDATE tasks SET error = 'old error' WHERE id = 'finish-me'`).run()
+
+    completeTask('finish-me', null, 'done', [])
+
+    const row = db.prepare(`
+      SELECT status, error, worker_id, lease_expires_at, heartbeat_at
+      FROM tasks WHERE id = 'finish-me'
+    `).get() as Record<string, string | null>
+    expect(row).toEqual({
+      status: 'complete',
+      error: null,
+      worker_id: null,
+      lease_expires_at: null,
+      heartbeat_at: null,
+    })
   })
 })

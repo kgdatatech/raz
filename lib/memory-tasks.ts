@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import {
-  listMemoryRows, createQueuedTask, hasRecentCompletion,
+  listMemoryRows, createQueuedTask, hasActiveDuplicate, hasRecentCompletion,
   PRIORITY, type RepoRow, type PriorityLevel,
 } from './db'
 import { type RoleId } from './roles'
@@ -107,15 +107,16 @@ export async function seedMemoryTasks(repo: RepoRow): Promise<MemoryTaskResult> 
 
     const description = descriptionForMemoryEntry(row.key, row.value, rule.label)
 
-    if (hasRecentCompletion(repo.id, description)) {
+    if (hasActiveDuplicate(repo.id, description) || hasRecentCompletion(repo.id, description)) {
       result.skipped++
       result.findings.push({ key: row.key, status: 'skipped' })
       continue
     }
 
-    const branch = branchForMemoryEntry(row.key)
+    const taskId = randomUUID()
+    const branch = `${branchForMemoryEntry(row.key)}-${taskId.slice(0, 6)}`
     createQueuedTask(
-      randomUUID(),
+      taskId,
       repo.id,
       description,
       branch,

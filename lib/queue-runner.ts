@@ -1,21 +1,22 @@
 import { execSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import {
-  getConfig, getNextQueuedTask, getRepoById, getTask, listRepos,
-  resetTaskToRunning, completeTask, failTask, saveTaskLog, activateHandoffs,
+  getConfig, claimNextQueuedTask, heartbeatTask, getRepoById, getTask, listRepos,
+  completeTask, failTask, saveTaskLog, activateHandoffs,
   hasRunningDuplicate, hasRecentCompletion, createQueuedTask,
   PRIORITY, type TaskRow, type RepoRow,
 } from './db'
 import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
 import { seedMemoryTasks } from './memory-tasks'
 import { runAgent } from './agent'
-import { getActiveAgentRunner, normalizeAgentRunner } from './agent'
+import { getActiveAgentRunner, isAgentRunnerAvailable, normalizeAgentRunner } from './agent'
 import { pushBranchAndOpenPR, mergePR, getPRStatus } from './github'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from './roles'
 
 let isProcessing   = false
 let started        = false
 let lastHealthScan = 0
+const workerId     = `queue-${process.pid}-${randomUUID().slice(0, 8)}`
 
 // Max number of CI wait retries before giving up (5s queue tick × 90 = 7.5 min)
 const CI_WAIT_MAX = 90
@@ -26,7 +27,7 @@ const NO_RETRY_WORKFLOWS = new Set(['strategy', 'review', 'audit', 'ci_wait'])
 function taskRunner(...tasks: Array<Pick<TaskRow, 'runner'> | null | undefined>): string {
   for (const task of tasks) {
     const runner = normalizeAgentRunner(task?.runner)
-    if (runner) return runner
+    if (runner && isAgentRunnerAvailable(runner)) return runner
   }
   return getActiveAgentRunner()
 }
@@ -162,6 +163,8 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
 export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<void> {
   if (task.workflow !== 'review' || !task.parent_task_id) return
 
+  const refreshedReview = getTask(task.id)
+  const reviewTask = refreshedReview?.id === task.id ? refreshedReview : task
   const parentTask = getTask(task.parent_task_id)
   if (!parentTask?.pr_url) return
 
@@ -178,7 +181,10 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
 
   if (status.state === 'closed') return
 
-  if (status.approvals > 0 && status.rejections === 0) {
+  const approved = reviewTask.review_verdict === 'approve' || (status.approvals > 0 && status.rejections === 0)
+  const rejected = reviewTask.review_verdict === 'request_changes' || status.rejections > 0
+
+  if (approved) {
     // QA approved — now check CI before merging
     if (status.ciStatus === 'passing' || status.ciStatus === 'no_checks') {
       await performMerge(prNumber, parentTask.id, task.id, repo)
@@ -216,10 +222,10 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
         taskRunner(parentTask, task),
       )
     }
-  } else {
+  } else if (rejected) {
     // QA requested changes — queue RAZ-Dev fix (HIGH: blocks merge)
     const fixId   = randomUUID()
-    const reason  = task.summary?.slice(0, 200) ?? 'Review requested changes — see GitHub PR for details.'
+    const reason  = reviewTask.summary?.slice(0, 200) ?? 'Review requested changes — see GitHub PR for details.'
     createQueuedTask(
       fixId,
       repo.id,
@@ -233,6 +239,8 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
       taskRunner(parentTask, task),
     )
   }
+  // No explicit verdict yet: leave the PR open. Absence of an approval is not
+  // equivalent to a request for changes.
 }
 
 // ── Main queue loop ───────────────────────────────────────────────────────────
@@ -243,7 +251,7 @@ async function processQueue(): Promise<void> {
   if (mode === 'standard') return
   if (getConfig('task_paused') === '1') return
 
-  const task = getNextQueuedTask()
+  const task = claimNextQueuedTask(workerId)
   if (!task) {
     // Queue is empty — seed health tasks at most once per HEALTH_SCAN_INTERVAL
     const now = Date.now()
@@ -258,7 +266,10 @@ async function processQueue(): Promise<void> {
   }
 
   const repo = getRepoById(task.repo_id)
-  if (!repo?.local_path) return
+  if (!repo?.local_path) {
+    failTask(task.id, 'Repository is missing a configured local path')
+    return
+  }
 
   // Dedup: skip if an identical task is already running, or completed in the last 15 min
   if (hasRunningDuplicate(repo.id, task.description, task.id)) {
@@ -273,7 +284,6 @@ async function processQueue(): Promise<void> {
   // ci_wait tasks are handled directly — no agent needed
   if (task.workflow === 'ci_wait' && task.parent_task_id) {
     isProcessing = true
-    resetTaskToRunning(task.id)
     try {
       const parentTask = getTask(task.parent_task_id)
       const match      = parentTask?.pr_url?.match(/\/pull\/(\d+)/)
@@ -289,7 +299,7 @@ async function processQueue(): Promise<void> {
   }
 
   isProcessing = true
-  resetTaskToRunning(task.id)
+  const heartbeat = setInterval(() => heartbeatTask(task.id, workerId), 30_000)
 
   const logBuffer: object[] = []
   let completionData: Record<string, unknown> | undefined
@@ -410,6 +420,7 @@ async function processQueue(): Promise<void> {
     failTask(task.id, reason)
     queueFailureStrategy(task, repo, reason)
   } finally {
+    clearInterval(heartbeat)
     isProcessing = false
   }
 }

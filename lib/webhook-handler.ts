@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto'
 import { randomUUID } from 'crypto'
-import { getRepo, createQueuedTask, hasRecentCompletion, PRIORITY, type RepoRow } from './db'
-import { upsertIssue, listIssues, getTaskForIssue, setTaskIssueNumber } from './db'
+import { getRepo, createQueuedTask, getTaskByBranch, hasActiveDuplicate, hasRecentCompletion, PRIORITY, type RepoRow } from './db'
+import { upsertIssue, getTaskForIssue, setTaskIssueNumber } from './db'
 import { roleFromLabels, workflowFromLabels, branchForIssue } from './issue-pipeline'
 
 // ── Signature verification ────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ interface GitHubPR {
   title:    string
   merged:   boolean
   html_url: string
+  head?:    { ref: string }
 }
 
 interface GitHubReview {
@@ -103,8 +104,12 @@ function handlePullRequestEvent(repo: RepoRow, payload: GitHubPayload): WebhookR
   if (!pr) return { action: 'skipped', description: 'No pull_request in payload' }
 
   if (payload.action === 'opened') {
+    const originatingTask = pr.head?.ref ? getTaskByBranch(repo.id, pr.head.ref) : null
+    if (originatingTask) {
+      return { action: 'skipped', description: `RAZ task ${originatingTask.id} owns the review pipeline for PR #${pr.number}` }
+    }
     const description = `Pre-merge review: PR #${pr.number} — ${pr.title.slice(0, 60)}`
-    if (hasRecentCompletion(repo.id, description)) {
+    if (hasActiveDuplicate(repo.id, description) || hasRecentCompletion(repo.id, description)) {
       return { action: 'skipped', description: `Review task for PR #${pr.number} recently completed` }
     }
     const taskId = randomUUID()
@@ -118,7 +123,7 @@ function handlePullRequestEvent(repo: RepoRow, payload: GitHubPayload): WebhookR
 
   if (payload.action === 'closed' && pr.merged) {
     const description = `Post-merge audit: PR #${pr.number} — ${pr.title.slice(0, 60)}`
-    if (hasRecentCompletion(repo.id, description)) {
+    if (hasActiveDuplicate(repo.id, description) || hasRecentCompletion(repo.id, description)) {
       return { action: 'skipped', description: `Audit task for PR #${pr.number} recently completed` }
     }
     const taskId = randomUUID()

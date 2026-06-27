@@ -16,7 +16,7 @@ const DB_DIR      = path.dirname(process.env.RAZ_DB_PATH ?? path.join(process.cw
 const REPORTS_DIR = path.join(DB_DIR, 'reports')
 
 import { randomUUID } from 'crypto'
-import { setMemory, getMemory, listTasks, savePlan, createQuestion, getQuestionAnswer, getConfig } from './db'
+import { setMemory, getMemory, listTasks, savePlan, createQuestion, getQuestionAnswer, getConfig, setTaskReviewVerdict } from './db'
 
 async function checkPauseOrAbort() {
   while (true) {
@@ -371,6 +371,8 @@ server.tool(
     const eventMap = { approve: 'APPROVE', comment: 'COMMENT', request_changes: 'REQUEST_CHANGES' } as const
     const { createPRReview } = await import('./github')
     const url = await createPRReview(GITHUB_OWNER, GITHUB_REPO, pr_number, body, eventMap[verdict])
+    const effectiveVerdict = verdict === 'comment' && /\bapproved?\b/i.test(body) ? 'approve' : verdict
+    setTaskReviewVerdict(TASK_ID, effectiveVerdict)
     return { content: [{ type: 'text' as const, text: `Review posted (${verdict}): ${url}` }] }
   },
 )

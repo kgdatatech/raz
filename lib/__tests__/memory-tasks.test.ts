@@ -7,10 +7,10 @@ vi.hoisted(() => {
 import db, { upsertRepo, setMemory } from '@/lib/db'
 import {
   classifyMemoryEntry, descriptionForMemoryEntry, branchForMemoryEntry,
-  seedMemoryTasks, MEMORY_TASK_RULES,
+  seedMemoryTasks,
 } from '../memory-tasks'
 import { PRIORITY } from '@/lib/db'
-import type { RepoRow, TaskRow } from '../db'
+import type { RepoRow } from '../db'
 
 function cleanDb() {
   db.prepare('DELETE FROM memory').run()

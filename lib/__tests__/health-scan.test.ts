@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { vi, describe, it, expect, beforeEach, afterEach, type MockInstance } from 'vitest'
 
 vi.hoisted(() => {
   process.env['RAZ_DB_PATH'] = ':memory:'
@@ -16,8 +16,8 @@ import {
 import type { RepoRow } from '../db'
 
 // Spies on fs — set up per describe block, restored after each test
-let readdirSpy: ReturnType<typeof vi.spyOn>
-let existsSpy:  ReturnType<typeof vi.spyOn>
+let readdirSpy: MockInstance<typeof fs.readdirSync>
+let existsSpy:  MockInstance<typeof fs.existsSync>
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ function cleanDb() {
   db.prepare('DELETE FROM repos').run()
 }
 
-function makeRepo(id = 1): RepoRow {
+function _makeRepo(id = 1): RepoRow {
   return { id, github_owner: 'owner', github_repo: 'repo', local_path: '/tmp/repo', default_branch: 'master' }
 }
 
@@ -92,7 +92,7 @@ describe('scanMissingTests()', () => {
   })
 
   it('returns finding for source file with no test counterpart', () => {
-    readdirSpy.mockReturnValue(['tools.ts', 'db.ts'] as unknown as string[])
+    readdirSpy.mockReturnValue(['tools.ts', 'db.ts'] as never)
     existsSpy.mockReturnValue(false)
     const findings = scanMissingTests('/tmp/repo')
     expect(findings).toHaveLength(2)
@@ -101,7 +101,7 @@ describe('scanMissingTests()', () => {
   })
 
   it('skips files that already have a test file', () => {
-    readdirSpy.mockReturnValue(['tools.ts', 'db.ts'] as unknown as string[])
+    readdirSpy.mockReturnValue(['tools.ts', 'db.ts'] as never)
     existsSpy.mockImplementation((p) => String(p).includes('tools.test.ts'))
     const findings = scanMissingTests('/tmp/repo')
     expect(findings).toHaveLength(1)
@@ -109,13 +109,13 @@ describe('scanMissingTests()', () => {
   })
 
   it('skips .d.ts and __-prefixed files', () => {
-    readdirSpy.mockReturnValue(['types.d.ts', '__mocks__.ts'] as unknown as string[])
+    readdirSpy.mockReturnValue(['types.d.ts', '__mocks__.ts'] as never)
     existsSpy.mockReturnValue(false)
     expect(scanMissingTests('/tmp/repo')).toEqual([])
   })
 
   it('assigns RAZ-QA test workflow', () => {
-    readdirSpy.mockReturnValue(['agent.ts'] as unknown as string[])
+    readdirSpy.mockReturnValue(['agent.ts'] as never)
     existsSpy.mockReturnValue(false)
     const [finding] = scanMissingTests('/tmp/repo')
     expect(finding!.role).toBe('RAZ-QA')
@@ -123,7 +123,7 @@ describe('scanMissingTests()', () => {
   })
 
   it('generates razqa/health-test-* branch', () => {
-    readdirSpy.mockReturnValue(['my-module.ts'] as unknown as string[])
+    readdirSpy.mockReturnValue(['my-module.ts'] as never)
     existsSpy.mockReturnValue(false)
     const [finding] = scanMissingTests('/tmp/repo')
     expect(finding!.branch).toMatch(/^razqa\/health-test-/)
@@ -172,7 +172,7 @@ describe('seedHealthTasks()', () => {
   })
 
   it('creates queued tasks for each finding', async () => {
-    readdirSpy.mockReturnValue(['agent.ts', 'db.ts'] as unknown as string[])
+    readdirSpy.mockReturnValue(['agent.ts', 'db.ts'] as never)
     existsSpy.mockReturnValue(false)
     const repo = upsertRepo('owner', 'repo', 'master', '/tmp/repo')
 
@@ -185,7 +185,7 @@ describe('seedHealthTasks()', () => {
   })
 
   it('skips findings that were recently completed (dedup)', async () => {
-    readdirSpy.mockReturnValue(['agent.ts'] as unknown as string[])
+    readdirSpy.mockReturnValue(['agent.ts'] as never)
     existsSpy.mockReturnValue(false)
     const repo = upsertRepo('owner', 'repo', 'master', '/tmp/repo')
 

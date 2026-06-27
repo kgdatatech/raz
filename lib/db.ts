@@ -191,6 +191,32 @@ if (VERSION < 13) {
   db.exec('PRAGMA user_version = 13')
 }
 
+if (VERSION < 14) {
+  for (const stmt of [
+    `ALTER TABLE tasks ADD COLUMN worker_id TEXT`,
+    `ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT`,
+    `ALTER TABLE tasks ADD COLUMN heartbeat_at TEXT`,
+    `ALTER TABLE tasks ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`,
+  ]) {
+    try { db.exec(stmt) } catch {}
+  }
+  db.exec('PRAGMA user_version = 14')
+}
+
+if (VERSION < 15) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN review_verdict TEXT`) } catch {}
+  db.exec('PRAGMA user_version = 15')
+}
+
+if (VERSION < 16) {
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_one_active_description
+    ON tasks(repo_id, description)
+    WHERE status IN ('queued', 'pending', 'running')
+  `)
+  db.exec('PRAGMA user_version = 16')
+}
+
 // ─── Priority ─────────────────────────────────────────────────────────────────
 
 export const PRIORITY = {
@@ -228,6 +254,11 @@ export interface TaskRow {
   error:          string | null
   files_changed:  string | null
   parent_task_id: string | null
+  worker_id?:      string | null
+  lease_expires_at?: string | null
+  heartbeat_at?:  string | null
+  attempt?:       number
+  review_verdict?: string | null
   created_at:     string
   completed_at:   string | null
 }
@@ -271,6 +302,37 @@ export function getNextQueuedTask(): TaskRow | null {
     ORDER BY priority DESC, created_at ASC
     LIMIT 1
   `).get() as TaskRow) ?? null
+}
+
+export function claimNextQueuedTask(workerId: string, leaseMinutes = 50): TaskRow | null {
+  const modifier = `+${Math.max(1, Math.floor(leaseMinutes))} minutes`
+  return (db.prepare(`
+    UPDATE tasks
+    SET status = 'running',
+        worker_id = ?,
+        heartbeat_at = datetime('now'),
+        lease_expires_at = datetime('now', ?),
+        attempt = attempt + 1,
+        error = NULL,
+        completed_at = NULL
+    WHERE id = (
+      SELECT id FROM tasks
+      WHERE status = 'queued'
+      ORDER BY priority DESC, created_at ASC
+      LIMIT 1
+    )
+      AND status = 'queued'
+    RETURNING *
+  `).get(workerId, modifier) as TaskRow) ?? null
+}
+
+export function heartbeatTask(taskId: string, workerId: string, leaseMinutes = 50): void {
+  const modifier = `+${Math.max(1, Math.floor(leaseMinutes))} minutes`
+  db.prepare(`
+    UPDATE tasks
+    SET heartbeat_at = datetime('now'), lease_expires_at = datetime('now', ?)
+    WHERE id = ? AND worker_id = ? AND status = 'running'
+  `).run(modifier, taskId, workerId)
 }
 
 export function countQueuedTasks(): number {
@@ -361,14 +423,21 @@ export function completeTask(id: string, prUrl: string | null, summary: string, 
       pr_url       = ?,
       summary      = ?,
       files_changed = ?,
-      completed_at = datetime('now')
+      completed_at = datetime('now'),
+      error = NULL,
+      worker_id = NULL,
+      lease_expires_at = NULL,
+      heartbeat_at = NULL
     WHERE id = ?
   `).run(prUrl, summary, JSON.stringify(filesChanged), id)
 }
 
 export function failTask(id: string, error: string) {
   db.prepare(`
-    UPDATE tasks SET status = 'failed', error = ?, completed_at = datetime('now') WHERE id = ?
+    UPDATE tasks SET
+      status = 'failed', error = ?, completed_at = datetime('now'),
+      worker_id = NULL, lease_expires_at = NULL, heartbeat_at = NULL
+    WHERE id = ?
   `).run(error, id)
 }
 
@@ -398,7 +467,12 @@ export function getTaskMessages(taskId: string): unknown[] | null {
 }
 
 export function resetTaskToRunning(taskId: string): void {
-  db.prepare(`UPDATE tasks SET status = 'running', error = NULL, completed_at = NULL WHERE id = ?`).run(taskId)
+  db.prepare(`
+    UPDATE tasks SET
+      status = 'running', error = NULL, completed_at = NULL,
+      worker_id = NULL, lease_expires_at = NULL, heartbeat_at = datetime('now')
+    WHERE id = ?
+  `).run(taskId)
 }
 
 export function saveWorktreePath(taskId: string, worktreePath: string): void {
@@ -415,6 +489,25 @@ export function saveSessionId(taskId: string, sessionId: string): void {
 
 export function clearSessionId(taskId: string): void {
   db.prepare(`UPDATE tasks SET session_id = NULL WHERE id = ?`).run(taskId)
+}
+
+export function getTaskByBranch(repoId: number, branch: string): TaskRow | null {
+  return (db.prepare(`
+    SELECT * FROM tasks WHERE repo_id = ? AND branch = ?
+    ORDER BY created_at DESC LIMIT 1
+  `).get(repoId, branch) as TaskRow) ?? null
+}
+
+export function hasActiveDuplicate(repoId: number, description: string): boolean {
+  return !!db.prepare(`
+    SELECT id FROM tasks
+    WHERE repo_id = ? AND description = ? AND status IN ('queued', 'pending', 'running')
+    LIMIT 1
+  `).get(repoId, description)
+}
+
+export function setTaskReviewVerdict(taskId: string, verdict: 'approve' | 'request_changes' | 'comment'): void {
+  db.prepare(`UPDATE tasks SET review_verdict = ? WHERE id = ?`).run(verdict, taskId)
 }
 
 export function getSessionId(taskId: string): string | null {
@@ -832,16 +925,29 @@ export function getSystemStatus(): SystemStatus {
   }
 }
 
-// Capture stale worktrees BEFORE marking as failed so agent-cc can clean them up on next start
+// Capture only expired leased worktrees. Importing this module can happen in more than
+// one Next.js worker, so active tasks must never be failed merely because a module loaded.
 export const STALE_WORKTREES = db.prepare(`
   SELECT t.id, t.worktree_path, r.local_path AS repo_path
   FROM tasks t LEFT JOIN repos r ON t.repo_id = r.id
-  WHERE t.status = 'running' AND t.worktree_path IS NOT NULL
+  WHERE t.status = 'running'
+    AND t.worktree_path IS NOT NULL
+    AND t.lease_expires_at IS NOT NULL
+    AND t.lease_expires_at < datetime('now')
 `).all() as { id: string; worktree_path: string; repo_path: string | null }[]
 
-// On startup, any task still 'running' was interrupted by a server restart
+// Recover abandoned queue work only after its lease expires.
 db.prepare(
-  `UPDATE tasks SET status = 'failed', error = 'Interrupted by server restart', completed_at = datetime('now') WHERE status = 'running'`
+  `UPDATE tasks
+   SET status = 'failed',
+       error = 'Worker lease expired',
+       completed_at = datetime('now'),
+       worker_id = NULL,
+       lease_expires_at = NULL,
+       heartbeat_at = NULL
+   WHERE status = 'running'
+     AND lease_expires_at IS NOT NULL
+     AND lease_expires_at < datetime('now')`
 ).run()
 
 export default db

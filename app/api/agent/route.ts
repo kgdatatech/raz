@@ -1,9 +1,10 @@
 import { NextRequest } from 'next/server'
 import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
-import { getActiveAgentRunner, normalizeAgentRunner, runAgent } from '@/lib/agent'
-import { pushBranchAndOpenPR, mergePR } from '@/lib/github'
-import { getRepo, upsertRepo, createTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId, getConfig, activateHandoffs } from '@/lib/db'
+import { getActiveAgentRunner, isAgentRunnerAvailable, normalizeAgentRunner, runAgent } from '@/lib/agent'
+import { pushBranchAndOpenPR } from '@/lib/github'
+import { getRepo, upsertRepo, createTask, createQueuedTask, completeTask, failTask, getTask, getTaskMessages, resetTaskToRunning, saveTaskLog, clearSessionId, activateHandoffs, PRIORITY } from '@/lib/db'
+import { handleReviewGate } from '@/lib/queue-runner'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from '@/lib/roles'
 
 export const runtime    = 'nodejs'
@@ -37,7 +38,8 @@ export async function POST(req: NextRequest) {
     }
     taskId = resumeTaskId
     branch = existing.branch
-    runner = normalizeAgentRunner(existing.runner) ?? runner
+    const existingRunner = normalizeAgentRunner(existing.runner)
+    runner = existingRunner && isAgentRunnerAvailable(existingRunner) ? existingRunner : runner
     // Only carry checkpoint messages for interrupted tasks — completed tasks restart clean
     if (existing.status !== 'complete') {
       checkpointMessages = getTaskMessages(resumeTaskId)
@@ -145,7 +147,9 @@ export async function POST(req: NextRequest) {
             // Read-only task (audit/strategy) — no commits, no PR needed
             const summary = String(completionData.summary ?? description)
             completeTask(taskId, null, summary, [])
-            activateHandoffs(taskId)
+            const completed = getTask(taskId)
+            if (completed) await handleReviewGate(completed, repoRow)
+            if (workflow !== 'review') activateHandoffs(taskId)
             send({ type: 'complete', message: 'Assessment complete. No code changes — PR skipped.', data: { branch, taskId } })
           } else {
           send({ type: 'thinking', message: 'Opening pull request...' })
@@ -181,24 +185,23 @@ export async function POST(req: NextRequest) {
             completeTask(taskId, prUrl, summary, files)
             send({ type: 'complete', message: 'PR opened.', data: { prUrl, branch, taskId } })
 
-            // In Autonomous mode: auto-merge the PR, fetch origin so origin/<baseBranch>
-            // is current, then activate pending handoff tasks. Handoffs were created as
-            // 'pending' during the agent run — activating them here ensures follow-on
-            // agents branch from origin/<baseBranch> AFTER the merge, not before.
-            const razMode = getConfig('raz_mode') ?? 'directed'
-            if (razMode === 'autonomous') {
-              const prNumber = parseInt(prUrl.split('/').pop() ?? '0', 10)
-              if (prNumber) {
-                try {
-                  await mergePR(owner, repo, prNumber)
-                  execSync(`git fetch origin`, { cwd: repoPath, stdio: 'pipe' })
-                  send({ type: 'thinking', message: `Auto-merged PR #${prNumber} — origin/${baseBranch} synced` })
-                } catch (mergeErr) {
-                  send({ type: 'thinking', message: `PR #${prNumber} opened but auto-merge failed: ${mergeErr}` })
-                }
-              }
+            const prNumber = parseInt(prUrl.split('/').pop() ?? '0', 10)
+            if (prNumber && workflow !== 'review') {
+              const reviewId = randomUUID()
+              createQueuedTask(
+                reviewId,
+                repoRow.id,
+                `Pre-merge review: PR #${prNumber} — ${description.slice(0, 60)}`,
+                `razqa/pre-merge-${prNumber}-${reviewId.slice(0, 6)}`,
+                'review',
+                'RAZ-QA',
+                taskId,
+                'queued',
+                PRIORITY.NORMAL,
+                runner,
+              )
+              send({ type: 'thinking', message: `Queued pre-merge review for PR #${prNumber}` })
             }
-            activateHandoffs(taskId)
           } catch (e) {
             failTask(taskId, `PR failed: ${e}`)
             send({ type: 'error', message: `Task complete but PR failed: ${e}` })
@@ -206,7 +209,9 @@ export async function POST(req: NextRequest) {
           } // end commitsAhead > 0
         } else if (completionData?.commit_skipped) {
           completeTask(taskId, null, String(completionData.summary ?? ''), [])
-          activateHandoffs(taskId)
+          const completed = getTask(taskId)
+          if (completed) await handleReviewGate(completed, repoRow)
+          if (workflow !== 'review') activateHandoffs(taskId)
         } else {
           // Agent emitted an error event and returned without completing — mark DB
           failTask(taskId, 'Agent did not reach task_complete')

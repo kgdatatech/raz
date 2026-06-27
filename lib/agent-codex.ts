@@ -31,6 +31,11 @@ function setupWorktree(repoPath: string, branch: string, baseBranch: string): st
     } catch {
       execSync(`git worktree add ${JSON.stringify(worktreePath)} ${JSON.stringify(branch)}`, { cwd: repoPath, stdio: 'pipe' })
     }
+    const mainModules = path.join(repoPath, 'node_modules')
+    const worktreeModules = path.join(worktreePath, 'node_modules')
+    if (fs.existsSync(mainModules) && !fs.existsSync(worktreeModules)) {
+      try { fs.symlinkSync(mainModules, worktreeModules, 'junction') } catch {}
+    }
     return worktreePath
   } catch (err) {
     throw new Error(`Failed to create Codex worktree: ${err}`)
@@ -118,7 +123,11 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       const model = process.env.RAZ_CODEX_MODEL
       if (model) args.splice(1, 0, '--model', model)
 
-      const proc = spawn(codexCommand(), args, { cwd: worktreePath, stdio: ['pipe', 'pipe', 'pipe'] })
+      const proc = spawn(codexCommand(), args, {
+        cwd: worktreePath,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: process.platform === 'win32',
+      })
       if (signal?.aborted) proc.kill('SIGTERM')
       signal?.addEventListener('abort', () => proc.kill('SIGTERM'), { once: true })
 
