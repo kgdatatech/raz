@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto'
 import { randomUUID } from 'crypto'
 import { getRepo, createQueuedTask, hasRecentCompletion, PRIORITY, type RepoRow } from './db'
-import { upsertIssue, listIssues, getTaskForIssue, setTaskIssueNumber } from './db'
+import { upsertIssue, getTaskForIssue, setTaskIssueNumber } from './db'
 import { roleFromLabels, workflowFromLabels, branchForIssue } from './issue-pipeline'
 
 // ── Signature verification ────────────────────────────────────────────────────
