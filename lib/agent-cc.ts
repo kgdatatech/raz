@@ -195,12 +195,12 @@ MANDATORY PHASE ORDER
 ══════════════════════════════════════
 0. MEMORY      → Call mcp__raz__get_memory FIRST. Always. It loads everything known about this repo.
 1. PLAN        → Call mcp__raz__create_plan before any writes. No exceptions.
-2. EXPLORE     → Use Read, Glob, Grep, Bash. Read CLAUDE.md and AGENTS.md first.
+2. EXPLORE     → Use the allowed file/search tools. Read CLAUDE.md and AGENTS.md first.
                → After every significant read: call mcp__raz__save_memory immediately.
-3. IMPLEMENT   → Targeted, minimal changes with Edit/Write/Bash.
-4. VERIFY      → Bash("npm run build"). Fix every error.
-5. TEST        → Bash("npm test"). Fix failures.
-6. LINT        → Bash("npm run lint"). Fix errors.
+3. IMPLEMENT   → Make targeted, minimal changes inside the worktree.
+4. VERIFY      → Run the configured build. Fix every error.
+5. TEST        → Run the test suite. Fix failures.
+6. LINT        → Run lint. Fix errors.
 7. SECURITY    → Call mcp__raz__security_scan on every changed file.
 8. COMPLETE    → Call mcp__raz__task_complete with summary and files list.
 
@@ -219,8 +219,8 @@ mcp__raz__handoff_to_role    — queue a follow-up task for another role (you do
 mcp__raz__fetch_issue        — fetch a GitHub issue by number
 mcp__raz__list_open_issues   — list open GitHub issues
 
-BUILT-IN TOOLS (use for all file and shell work)
-Read, Write, Edit, Bash, Glob, Grep
+TOOLS
+Use only the allowed tools and stay inside the provided worktree.
 
 ══════════════════════════════════════
 WHEN TO ASK THE USER
@@ -321,7 +321,9 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     const chatContext  = repoId ? getRecentChatContext(repoId) : ''
     const systemPrompt = buildSystemPrompt({ workflow, roleContext: roleDefinition.systemContext, issueContent, parentRole, chatContext: chatContext || undefined })
 
-    // Build tool allowlist: map SDK tool names to Claude Code built-in names + MCP tool names
+    // Claude Code still needs its built-ins because the MCP server currently
+    // hosts RAZ lifecycle tools, not the SDK file tools. Permission bypass is
+    // deliberately disabled below.
     const builtinMap: Record<string, string> = {
       read_file:          'Read',
       write_file:         'Write',
@@ -336,16 +338,15 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
       check_coverage:     'Bash',
       validate_migration: 'Bash',
     }
-    const razMcpTools = [
+    const commonMcpTools = [
       'mcp__raz__get_memory', 'mcp__raz__get_role_context',
       'mcp__raz__ask_user',
       'mcp__raz__create_plan', 'mcp__raz__save_memory', 'mcp__raz__task_complete',
-      'mcp__raz__security_scan', 'mcp__raz__generate_report',
       'mcp__raz__delegate_to_role', 'mcp__raz__handoff_to_role',
-      'mcp__raz__fetch_issue', 'mcp__raz__list_open_issues',
     ]
-    const allowedBuiltins = [...new Set(roleDefinition.allowedTools.map((t) => builtinMap[t]).filter(Boolean))]
-    const allowedTools    = [...allowedBuiltins, ...razMcpTools].join(',')
+    const roleMcpTools = roleDefinition.allowedTools.map((tool) => `mcp__raz__${tool}`)
+    const allowedBuiltins = roleDefinition.allowedTools.map((tool) => builtinMap[tool]).filter(Boolean)
+    const allowedTools = [...new Set([...allowedBuiltins, ...commonMcpTools, ...roleMcpTools])].join(',')
 
     const dbPath = process.env.RAZ_DB_PATH ?? path.join(process.cwd(), '.raziel', 'raziel.db')
 
@@ -368,13 +369,22 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     const taskPrompt   = `Task: ${description}${issueNumber ? `\n\nLinked issue: #${issueNumber}` : ''}${isWslPath(worktreePath!) ? `\n\nWorking directory: ${worktreePath}` : ''}`
 
     const claudeArgs = savedSession
-      ? ['--resume', savedSession, '-p', 'Continue from where you left off. Review what was already done and proceed with remaining steps.', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
-      : ['-p', taskPrompt, '--system-prompt', systemPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
+      ? ['--resume', savedSession, '-p', 'Continue from where you left off. Review what was already done and proceed with remaining steps.', '--output-format', 'stream-json', '--verbose', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
+      : ['-p', taskPrompt, '--system-prompt', systemPrompt, '--output-format', 'stream-json', '--verbose', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
 
     const { exe, args, shell } = resolveClaudeSpawn(claudeArgs)
+    const {
+      GITHUB_TOKEN: _githubToken,
+      GITHUB_PAT: _githubPat,
+      RAZ_CONFIG_TOKEN: _configToken,
+      ...agentEnv
+    } = process.env
+    void _githubToken
+    void _githubPat
+    void _configToken
     const claudeProc = spawn(exe, args, {
       cwd:   isWslPath(worktreePath!) ? undefined : worktreePath!,
-      env:   { ...process.env },
+      env:   agentEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell,
     })
@@ -452,7 +462,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
           }
           onEvent({ type: 'complete', message: completionData.summary, data: { files_changed: completionData.files_changed, notes: completionData.notes, branch, isSubAgent } })
         } else {
-          onEvent({ type: 'complete', message: ev.result ?? 'Agent finished.', data: { branch, isSubAgent } })
+          onEvent({ type: 'error', message: 'Claude Code finished without calling task_complete.' })
         }
       }
     }

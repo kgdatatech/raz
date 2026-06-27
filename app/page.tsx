@@ -821,9 +821,7 @@ export default function RazDashboard() {
                 branch:      (d.branch as string) ?? '',
                 fromRole:    params.role,
               }
-              if (razMode === 'supervised' || razMode === 'autonomous') {
-                setTimeout(() => acceptHandoff(suggestion), 800)
-              } else {
+              if (razMode === 'standard') {
                 setHandoffSuggestions((prev) => [...prev, suggestion])
               }
             }

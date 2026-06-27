@@ -100,7 +100,9 @@ describe('queueFailureStrategy()', () => {
     expect(call[2]).toContain('Build feature X')
     expect(call[2]).toContain('Agent did not reach task_complete')
     expect(call[6]).toBe('task-id') // parent_task_id links back to failed task
-    expect(call[9]).toBe('sdk')
+    // The failed task's SDK runner is unavailable, so recovery uses the
+    // currently configured available runner instead of repeating the failure.
+    expect(call[9]).toBe('claude_code')
   })
 
   it('sets status to queued', () => {

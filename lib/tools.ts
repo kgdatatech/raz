@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import { getConfig, setMemory, savePlan } from './db'
+import { getConfig, setMemory, savePlan, setTaskReviewVerdict } from './db'
 import {
   fetchIssue, listOpenIssues, listOpenPRs,
   getPRDetails, getPRFileDiff, createPRReview,
@@ -139,7 +139,14 @@ function isBlockedPath(filePath: string): boolean {
 }
 
 function isAllowedCommand(cmd: string): boolean {
-  return ALLOWED_COMMANDS.some((p) => p.test(cmd.trim()))
+  const trimmed = cmd.trim()
+  if (/[\r\n;&|`<>]|\$\(/.test(trimmed)) return false
+  return ALLOWED_COMMANDS.some((p) => p.test(trimmed))
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate))
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
 async function detectPackageManager(cwd: string): Promise<string> {
@@ -478,7 +485,7 @@ export async function executeTool(
       const rel      = input.path as string
       const filePath = path.resolve(worktreePath, rel)
       if (isBlockedPath(rel)) return 'ERROR: Access to this file is blocked for security.'
-      if (!filePath.startsWith(path.resolve(worktreePath))) return 'ERROR: Path traversal not allowed.'
+      if (!isWithinRoot(worktreePath, filePath)) return 'ERROR: Path traversal not allowed.'
       try {
         const content = fs.readFileSync(filePath, 'utf-8')
         const CAP = 6_000
@@ -495,7 +502,7 @@ export async function executeTool(
       const rel      = input.path as string
       const filePath = path.resolve(worktreePath, rel)
       if (isBlockedPath(rel)) return 'ERROR: Cannot write to this file.'
-      if (!filePath.startsWith(path.resolve(worktreePath))) return 'ERROR: Path traversal not allowed.'
+      if (!isWithinRoot(worktreePath, filePath)) return 'ERROR: Path traversal not allowed.'
       try {
         fs.mkdirSync(path.dirname(filePath), { recursive: true })
         fs.writeFileSync(filePath, input.content as string, 'utf-8')
@@ -509,7 +516,7 @@ export async function executeTool(
     case 'list_directory': {
       const rel     = input.path as string
       const dirPath = path.resolve(worktreePath, rel)
-      if (!dirPath.startsWith(path.resolve(worktreePath))) return 'ERROR: Path traversal not allowed.'
+      if (!isWithinRoot(worktreePath, dirPath)) return 'ERROR: Path traversal not allowed.'
       try {
         const entries = fs.readdirSync(dirPath, { withFileTypes: true })
         return entries
@@ -525,6 +532,9 @@ export async function executeTool(
     case 'search_codebase': {
       const pattern  = input.pattern as string
       const glob     = (input.file_glob as string | undefined) ?? ''
+      if (/[\r\n;&|`<>]|\$\(/.test(pattern) || /[\r\n;&|`<>$()]/.test(glob)) {
+        return 'ERROR: Search pattern contains unsupported shell metacharacters.'
+      }
       const ctx_lines = Math.min(Number(input.context_lines ?? 2), 5)
       const includeFlag = glob ? `--include="${glob}"` : '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.md" --include="*.css"'
       const cmd = `grep -rn ${includeFlag} -C ${ctx_lines} ${JSON.stringify(pattern)} . 2>/dev/null | head -200`
@@ -787,7 +797,15 @@ export async function executeTool(
           comment:          'COMMENT',
         }
         const event = verdictMap[input.verdict as string] ?? 'COMMENT'
-        return await createPRReview(github.owner, github.repo, input.pr_number as number, input.body as string, event)
+        const result = await createPRReview(github.owner, github.repo, input.pr_number as number, input.body as string, event)
+        if (taskId) {
+          const rawVerdict = input.verdict as string
+          const effectiveVerdict = rawVerdict === 'comment' && /\bapproved?\b/i.test(input.body as string)
+            ? 'approve'
+            : rawVerdict === 'request_changes' ? 'request_changes' : rawVerdict === 'approve' ? 'approve' : 'comment'
+          setTaskReviewVerdict(taskId, effectiveVerdict)
+        }
+        return result
       } catch (e) {
         return `ERROR: Could not post review: ${e}`
       }

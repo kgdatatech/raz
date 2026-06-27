@@ -100,7 +100,7 @@ describe('resolveClaudeSpawn()', () => {
       const whereResult = 'C:\\Users\\Test\\.local\\bin\\claude.exe'
       // existsSync: false for all candidate paths, but true for the where result
       vi.mocked(fs.existsSync).mockImplementation((p) => String(p) === whereResult)
-      vi.mocked(execFileSync).mockReturnValue(`${whereResult}\r\n` as unknown as Buffer)
+      vi.mocked(execFileSync).mockReturnValue(`${whereResult}\r\n`)
       const { exe, shell } = resolveClaudeSpawn([], 'win32', 'C:\\NoMatch', 'C:\\NoMatch')
       expect(exe).toBe(whereResult)
       expect(shell).toBe(false)

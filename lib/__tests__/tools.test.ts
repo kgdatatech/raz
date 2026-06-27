@@ -712,19 +712,16 @@ describe('validate_migration', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('generate_report', () => {
-  let mkdirSpy: ReturnType<typeof vi.spyOn>
-  let writeSpy: ReturnType<typeof vi.spyOn>
-
   beforeEach(() => {
-    mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined)
-    writeSpy  = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined)
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined)
+    vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined)
   })
 
   afterEach(() => {
     // Restore only the fs spies — vi.restoreAllMocks() would also nuke the
     // factory-set mockResolvedValues on the github module mocks.
-    mkdirSpy.mockRestore()
-    writeSpy.mockRestore()
+    vi.mocked(fs.mkdirSync).mockRestore()
+    vi.mocked(fs.writeFileSync).mockRestore()
   })
 
   it('returns a preview of the generated report', async () => {
@@ -744,7 +741,7 @@ describe('generate_report', () => {
       { title: 'Dir Test', summary: 'S', findings: 'F' },
       ctx(),
     )
-    expect(mkdirSpy).toHaveBeenCalledWith(
+    expect(vi.mocked(fs.mkdirSync)).toHaveBeenCalledWith(
       expect.stringContaining('.raziel'),
       expect.objectContaining({ recursive: true }),
     )
@@ -756,12 +753,12 @@ describe('generate_report', () => {
       { title: 'Write Test', summary: 'Sum', findings: 'Key findings here' },
       ctx(),
     )
-    expect(writeSpy).toHaveBeenCalledWith(
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
       expect.stringContaining('.md'),
       expect.stringContaining('# Write Test'),
       'utf-8',
     )
-    expect(writeSpy).toHaveBeenCalledWith(
+    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('Key findings here'),
       'utf-8',
@@ -774,7 +771,7 @@ describe('generate_report', () => {
       { title: 'My Fancy Report!', summary: 'S', findings: 'F' },
       ctx(),
     )
-    const writtenPath = (writeSpy.mock.calls[0] as [string])[0]
+    const writtenPath = String(vi.mocked(fs.writeFileSync).mock.calls[0]?.[0])
     expect(writtenPath).toContain('my-fancy-report')
   })
 
@@ -917,6 +914,7 @@ describe('GitHub tools with context', () => {
     vi.mocked(getPRDetails).mockResolvedValueOnce({
       number: 3, title: 'Merged PR', state: 'closed', merged: true,
       ciStatus: 'success', approvals: 2, author: 'dev',
+      mergeableState: 'clean', headBranch: 'feature', baseBranch: 'master',
       createdAt: '2026-01-01T00:00:00Z', body: null, files: [], comments: [],
     })
     const r = await executeTool('get_pr_summary', { pr_number: 3 }, githubCtx())
@@ -927,6 +925,7 @@ describe('GitHub tools with context', () => {
     vi.mocked(getPRDetails).mockResolvedValueOnce({
       number: 5, title: 'No comments PR', state: 'open', merged: false,
       ciStatus: 'pending', approvals: 0, author: 'dev',
+      mergeableState: 'clean', headBranch: 'feature', baseBranch: 'master',
       createdAt: '2026-01-01T00:00:00Z', body: 'desc', files: [], comments: [],
     })
     const r = await executeTool('get_pr_summary', { pr_number: 5 }, githubCtx())

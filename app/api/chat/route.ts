@@ -62,19 +62,24 @@ function isBlockedPath(filePath: string): boolean {
   })
 }
 
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate))
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
 async function runTool(name: string, input: Record<string, unknown>, repoPath: string): Promise<string> {
   if (name === 'read_file') {
     const rel      = input.path as string
     const filePath = path.resolve(repoPath, rel)
     if (isBlockedPath(rel)) return 'ERROR: Access to this file is blocked for security.'
-    if (!filePath.startsWith(path.resolve(repoPath))) return 'ERROR: Path traversal not allowed.'
+    if (!isWithinRoot(repoPath, filePath)) return 'ERROR: Path traversal not allowed.'
     try { return fs.readFileSync(filePath, 'utf-8').slice(0, 8_000) }
     catch { return `ERROR: Could not read file: ${rel}` }
   }
   if (name === 'list_directory') {
     const rel     = input.path as string
     const dirPath = path.resolve(repoPath, rel)
-    if (!dirPath.startsWith(path.resolve(repoPath))) return 'ERROR: Path traversal not allowed.'
+    if (!isWithinRoot(repoPath, dirPath)) return 'ERROR: Path traversal not allowed.'
     try {
       return fs.readdirSync(dirPath, { withFileTypes: true })
         .filter((e) => !BLOCKED_PATHS.includes(e.name))
@@ -85,6 +90,9 @@ async function runTool(name: string, input: Record<string, unknown>, repoPath: s
   if (name === 'search_codebase') {
     const pattern     = input.pattern as string
     const glob        = (input.file_glob as string | undefined) ?? ''
+    if (/[\r\n;&|`<>]|\$\(/.test(pattern) || /[\r\n;&|`<>$()]/.test(glob)) {
+      return 'ERROR: Search pattern contains unsupported shell metacharacters.'
+    }
     const includeFlag = glob
       ? `--include="${glob}"`
       : '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" --include="*.md" --include="*.css"'

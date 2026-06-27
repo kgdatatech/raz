@@ -87,7 +87,7 @@ function makePRStatus(overrides: Partial<ReturnType<typeof defaultPRStatus>> = {
   return { ...defaultPRStatus(), ...overrides }
 }
 
-function defaultPRStatus() {
+function defaultPRStatus(): Awaited<ReturnType<typeof getPRStatus>> {
   return {
     prNumber:       42,
     state:          'open',
@@ -96,7 +96,7 @@ function defaultPRStatus() {
     reviewDecision: 'none',
     approvals:      0,
     rejections:     0,
-    ciStatus:       'passing' as const,
+    ciStatus:       'passing',
     failingChecks:  [] as string[],
     checkCount:     1,
     url:            'https://github.com/owner/repo/pull/42',
@@ -171,6 +171,26 @@ describe('handleReviewGate()', () => {
     vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ approvals: 1, ciStatus: 'no_checks' }))
     await handleReviewGate(makeTask(), REPO)
     expect(mergePR).toHaveBeenCalledWith('owner', 'repo', 42)
+  })
+
+  it('uses the persisted QA verdict when GitHub blocks self-approval', async () => {
+    const review = makeTask({ review_verdict: 'approve' })
+    const parent = makeParentTask()
+    vi.mocked(getTask).mockImplementation((id) => id === review.id ? review : parent)
+    vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ approvals: 0, rejections: 0, ciStatus: 'passing' }))
+
+    await handleReviewGate(review, REPO)
+
+    expect(mergePR).toHaveBeenCalledWith('owner', 'repo', 42)
+  })
+
+  it('does not interpret an absent verdict as a rejection', async () => {
+    vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ approvals: 0, rejections: 0 }))
+
+    await handleReviewGate(makeTask(), REPO)
+
+    expect(mergePR).not.toHaveBeenCalled()
+    expect(createQueuedTask).not.toHaveBeenCalled()
   })
 
   it('queues ci_wait when approved but CI is still pending', async () => {
