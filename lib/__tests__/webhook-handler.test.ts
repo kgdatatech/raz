@@ -107,7 +107,7 @@ describe('handleGitHubWebhook() — issues', () => {
   })
 
   it('skips if an active task already exists for the issue', async () => {
-    const repo = makeRepo()
+    const _repo = makeRepo()
     await handleGitHubWebhook('issues', basePayload({
       action: 'opened',
       issue:  { number: 7, title: 'Duplicate issue', body: null, state: 'open', labels: [], assignee: null },
