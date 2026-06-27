@@ -29,7 +29,7 @@ function cleanDb() {
   db.prepare('DELETE FROM repos').run()
 }
 
-function makeRepo(id = 1): RepoRow {
+function _makeRepo(id = 1): RepoRow {
   return { id, github_owner: 'owner', github_repo: 'repo', local_path: '/tmp/repo', default_branch: 'master' }
 }
 
