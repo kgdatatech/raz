@@ -90,10 +90,10 @@ describe('resolveClaudeSpawn()', () => {
 
     it('uses .local/bin path when that is the first match', () => {
       vi.mocked(fs.existsSync).mockImplementation((p) =>
-        String(p).includes('.local\\bin\\claude.exe')
+        /\.local[\\/]bin[\\/]claude\.exe$/.test(String(p))
       )
       const { exe } = resolveClaudeSpawn([], 'win32', 'C:\\Users\\Test\\AppData\\Roaming', 'C:\\Users\\Test')
-      expect(exe).toContain('.local\\bin\\claude.exe')
+      expect(exe.replace(/\\/g, '/')).toContain('.local/bin/claude.exe')
     })
 
     it('falls back to PATH discovery via "where" when no candidate exists', () => {

@@ -20,6 +20,13 @@ vi.mock('../github', () => ({
 
 vi.mock('child_process', () => ({ execSync: vi.fn() }))
 
+vi.mock('../agent', () => ({
+  runAgent:               vi.fn(),
+  getActiveAgentRunner:   vi.fn(() => 'claude_code'),
+  normalizeAgentRunner:   vi.fn((value: string | null | undefined) => value ?? null),
+  isAgentRunnerAvailable: vi.fn((runner: string) => runner === 'claude_code'),
+}))
+
 import { shouldQueueFailureStrategy, queueFailureStrategy } from '../queue-runner'
 import { createQueuedTask } from '../db'
 import type { TaskRow, RepoRow } from '../db'
