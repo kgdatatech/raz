@@ -106,6 +106,12 @@ Set either cap to `0` to disable it. Caps are editable via `POST /api/config`, a
 
 ---
 
+## Concurrency
+
+RAZ runs up to `max_concurrent_tasks` agents in parallel (default **2**, max 8), each in its own isolated git worktree. Raise it via `POST /api/config` if your machine and budget allow — the daily spend cap still applies across all workers combined. Autonomous health scans only run when the pool is fully idle.
+
+---
+
 ## Setup
 
 ```bash

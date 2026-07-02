@@ -14,10 +14,24 @@ import { getActiveAgentRunner, isAgentRunnerAvailable, normalizeAgentRunner } fr
 import { pushBranchAndOpenPR, mergePR, getPRStatus } from './github'
 import { type RoleId, DEFAULT_ROLE, ROLE_IDS } from './roles'
 
-let isProcessing   = false
+const activeTasks  = new Set<string>()
 let started        = false
 let lastHealthScan = 0
 const workerId     = `queue-${process.pid}-${randomUUID().slice(0, 8)}`
+
+const DEFAULT_MAX_CONCURRENT = 2
+const MAX_CONCURRENT_CEILING = 8
+
+export function getMaxConcurrentTasks(): number {
+  const raw = getConfig('max_concurrent_tasks')
+  const n   = raw === null ? NaN : parseInt(raw, 10)
+  if (!Number.isFinite(n)) return DEFAULT_MAX_CONCURRENT
+  return Math.min(MAX_CONCURRENT_CEILING, Math.max(1, n))
+}
+
+export function getActiveTaskCount(): number {
+  return activeTasks.size
+}
 
 // Max number of CI wait retries before giving up (5s queue tick × 90 = 7.5 min)
 const CI_WAIT_MAX = 90
@@ -305,17 +319,33 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
 }
 
 // ── Main queue loop ───────────────────────────────────────────────────────────
+// Each tick fills the pool up to max_concurrent_tasks. Tasks run without being
+// awaited; the interval keeps ticking so new work is claimed as slots free up.
 async function processQueue(): Promise<void> {
-  if (isProcessing) return
-
   const mode = getConfig('raz_mode') ?? 'standard'
   if (mode === 'standard') return
   if (getConfig('task_paused') === '1') return
   if (isDailyCapReached()) return
 
-  const task = claimNextQueuedTask(workerId)
-  if (!task) {
-    // Queue is empty — seed health tasks at most once per HEALTH_SCAN_INTERVAL
+  const maxConcurrent = getMaxConcurrentTasks()
+  let claimed = 0
+
+  while (activeTasks.size < maxConcurrent) {
+    const task = claimNextQueuedTask(workerId)
+    if (!task) break
+    // Defensive: a claim can never return an already-active task in production
+    // (claiming flips status), but guard against it to avoid double execution.
+    if (activeTasks.has(task.id)) break
+    claimed++
+    activeTasks.add(task.id)
+    void executeTask(task)
+      .catch(() => {})
+      .finally(() => { activeTasks.delete(task.id) })
+  }
+
+  // Seed health tasks only when fully idle, at most once per HEALTH_SCAN_INTERVAL.
+  // Seeding while agents are mid-change would scan a repo in a transient state.
+  if (claimed === 0 && activeTasks.size === 0) {
     const now = Date.now()
     if (now - lastHealthScan > HEALTH_SCAN_INTERVAL) {
       lastHealthScan = now
@@ -324,9 +354,11 @@ async function processQueue(): Promise<void> {
         await seedMemoryTasks(repo)
       }
     }
-    return
   }
+}
 
+// ── Single task execution ─────────────────────────────────────────────────────
+async function executeTask(task: TaskRow): Promise<void> {
   const repo = getRepoById(task.repo_id)
   if (!repo?.local_path) {
     failTask(task.id, 'Repository is missing a configured local path')
@@ -345,7 +377,6 @@ async function processQueue(): Promise<void> {
 
   // ci_wait tasks are handled directly — no agent needed
   if (task.workflow === 'ci_wait' && task.parent_task_id) {
-    isProcessing = true
     try {
       const parentTask = getTask(task.parent_task_id)
       const match      = parentTask?.pr_url?.match(/\/pull\/(\d+)/)
@@ -354,13 +385,10 @@ async function processQueue(): Promise<void> {
       completeTask(task.id, null, `CI gate check — ${task.description}`, [])
     } catch (err) {
       failTask(task.id, `CI gate error: ${err}`)
-    } finally {
-      isProcessing = false
     }
     return
   }
 
-  isProcessing = true
   const heartbeat = setInterval(() => heartbeatTask(task.id, workerId), 30_000)
 
   const logBuffer: object[] = []
@@ -507,12 +535,11 @@ async function processQueue(): Promise<void> {
   } finally {
     recordTaskSpend(taskCostUsd)
     clearInterval(heartbeat)
-    isProcessing = false
   }
 }
 
 export function startQueueRunner(): void {
   if (started) return
   started = true
-  setInterval(() => { processQueue().catch(() => { isProcessing = false }) }, 5_000)
+  setInterval(() => { processQueue().catch(() => {}) }, 5_000)
 }

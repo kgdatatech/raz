@@ -34,6 +34,13 @@ export async function POST(req: NextRequest) {
     if (!['0', '1'].includes(configValue)) {
       return NextResponse.json({ error: 'Invalid pause state.' }, { status: 400 })
     }
+  } else if (configKey === 'max_concurrent_tasks') {
+    const n = parseInt(configValue, 10)
+    if (!Number.isFinite(n) || n < 1 || n > 8 || String(n) !== configValue.trim()) {
+      return NextResponse.json({ error: 'Invalid max_concurrent_tasks — must be an integer from 1 to 8.' }, { status: 400 })
+    }
+    setConfig(configKey, String(n))
+    return NextResponse.json({ ok: true })
   } else if (configKey === 'spend_daily_cap_usd' || configKey === 'spend_task_cap_usd') {
     const cap = Number(configValue)
     if (!Number.isFinite(cap) || cap < 0) {

@@ -58,7 +58,7 @@ vi.mock('child_process', () => ({
 
 // ── Imports ───────────────────────────────────────────────────────────────────
 
-import { startQueueRunner } from '../queue-runner'
+import { startQueueRunner, getMaxConcurrentTasks } from '../queue-runner'
 import {
   getConfig, claimNextQueuedTask, getRepoById, getTask, listRepos,
   completeTask, failTask, saveTaskLog, activateHandoffs,
@@ -311,6 +311,60 @@ describe('processQueue()', () => {
     })
   })
 
+  // ── Concurrency — worker pool ─────────────────────────────────────────────
+
+  describe('concurrency', () => {
+    it('claims up to max_concurrent_tasks in one tick, stops while full, and resumes when a slot frees', async () => {
+      let resolveA!: () => void
+      let resolveB!: () => void
+      vi.mocked(runAgent)
+        .mockImplementationOnce(() => new Promise<void>((r) => { resolveA = r }))
+        .mockImplementationOnce(() => new Promise<void>((r) => { resolveB = r }))
+      vi.mocked(claimNextQueuedTask)
+        .mockReturnValueOnce(makeTask({ id: 'task-a', description: 'Task A', branch: 'raz-dev/a' }))
+        .mockReturnValueOnce(makeTask({ id: 'task-b', description: 'Task B', branch: 'raz-dev/b' }))
+        .mockReturnValue(null)
+
+      // One tick claims both tasks and runs both agents concurrently
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(runAgent).toHaveBeenCalledTimes(2)
+      expect(claimNextQueuedTask).toHaveBeenCalledTimes(2)
+
+      // Pool is full — the next tick must not claim more work
+      vi.mocked(claimNextQueuedTask).mockClear()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(claimNextQueuedTask).not.toHaveBeenCalled()
+
+      // Finish one task — the slot frees and the next tick claims again
+      resolveA()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(claimNextQueuedTask).toHaveBeenCalled()
+
+      // Drain the pool so later tests start from an idle state
+      resolveB()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    it('does not seed health tasks while agents are still running', async () => {
+      let resolveA!: () => void
+      vi.mocked(runAgent).mockImplementationOnce(() => new Promise<void>((r) => { resolveA = r }))
+      vi.mocked(claimNextQueuedTask)
+        .mockReturnValueOnce(makeTask({ id: 'task-a', description: 'Task A', branch: 'raz-dev/a' }))
+        .mockReturnValue(null)
+      vi.mocked(listRepos).mockReturnValue([REPO])
+
+      await vi.advanceTimersByTimeAsync(5_000)  // claims task-a, still running
+      await vi.advanceTimersByTimeAsync(5_000)  // idle claim, but pool is busy
+      expect(seedHealthTasks).not.toHaveBeenCalled()
+
+      resolveA()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(5_000)  // now fully idle — seeding allowed
+      expect(seedHealthTasks).toHaveBeenCalledWith(REPO)
+    })
+  })
+
   // ── Empty queue — health / memory seeding ─────────────────────────────────
 
   describe('empty queue', () => {
@@ -525,5 +579,34 @@ describe('processQueue()', () => {
       expect(lastBuffer.map((e) => e.type)).not.toContain('tool_result')
       expect(lastBuffer.map((e) => e.type)).toContain('usage')
     })
+  })
+})
+
+// ── getMaxConcurrentTasks() ───────────────────────────────────────────────────
+
+describe('getMaxConcurrentTasks()', () => {
+  it('defaults to 2 when unset', () => {
+    vi.mocked(getConfig).mockReturnValue(null)
+    expect(getMaxConcurrentTasks()).toBe(2)
+  })
+
+  it('reads the configured value', () => {
+    vi.mocked(getConfig).mockReturnValue('3')
+    expect(getMaxConcurrentTasks()).toBe(3)
+  })
+
+  it('clamps to a minimum of 1', () => {
+    vi.mocked(getConfig).mockReturnValue('0')
+    expect(getMaxConcurrentTasks()).toBe(1)
+  })
+
+  it('clamps to a maximum of 8', () => {
+    vi.mocked(getConfig).mockReturnValue('99')
+    expect(getMaxConcurrentTasks()).toBe(8)
+  })
+
+  it('falls back to 2 on a non-numeric value', () => {
+    vi.mocked(getConfig).mockReturnValue('lots')
+    expect(getMaxConcurrentTasks()).toBe(2)
   })
 })

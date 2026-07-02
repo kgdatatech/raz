@@ -84,7 +84,7 @@ raziel/
 ## Database & Migrations
 
 - **File:** `lib/db.ts`
-- **Current schema version:** 17 (stored in `PRAGMA user_version`)
+- **Current schema version:** 18 (stored in `PRAGMA user_version`)
 - **Migration pattern:** `if (VERSION < N) { db.exec(...); db.exec('PRAGMA user_version = N') }`
 - **WAL mode + FK enforcement:** Set on startup
 - **Startup safety:** Tasks stuck in `running` are auto-failed on server restart
@@ -117,6 +117,8 @@ Always wrap `ALTER TABLE` in try/catch — SQLite has no `ADD COLUMN IF NOT EXIS
 | `RAZ_API_TOKEN` | No | When set, `proxy.ts` requires this token on every route except `/api/webhook/github`, `/api/health`, and the `/login` flow. Send via `Authorization: Bearer`, `x-raz-token`, or the `raz_token` cookie set by `/login`. Unset = auth disabled (local use). |
 
 Copy `.env.example` → `.env.local` to get started.
+
+**Concurrency** (`system_config` key `max_concurrent_tasks`, default 2, clamped 1–8): the queue runner fills a pool of up to N tasks per 5 s tick, each in its own git worktree. Health-scan seeding only happens when the pool is fully idle. Editable via `POST /api/config`; live pool state is in `GET /api/status` under `runner`.
 
 **Spend caps** (`lib/spend.ts`, stored in `system_config`): `spend_daily_cap_usd` (default 10) stops the queue runner from claiming tasks for the rest of the UTC day once cumulative reported cost reaches it; `spend_task_cap_usd` (default 2) aborts a running agent whose reported cost crosses it (fails the task, no failure-strategy queued). A value of `0` disables that cap. Both are editable via `POST /api/config`; current state is in `GET /api/status` under `spend`.
 

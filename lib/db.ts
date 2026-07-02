@@ -225,6 +225,11 @@ if (VERSION < 17) {
   db.exec('PRAGMA user_version = 17')
 }
 
+if (VERSION < 18) {
+  db.exec(`INSERT OR IGNORE INTO system_config (key, value) VALUES ('max_concurrent_tasks', '2')`)
+  db.exec('PRAGMA user_version = 18')
+}
+
 // ─── Priority ─────────────────────────────────────────────────────────────────
 
 export const PRIORITY = {
