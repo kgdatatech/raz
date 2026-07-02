@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ROLES, ROLE_IDS, DEFAULT_ROLE } from '../roles'
+import { ROLES, ROLE_IDS, DEFAULT_ROLE, GLOBAL_AGENT_RULES } from '../roles'
 
 describe('roles', () => {
   it('exports all five role IDs', () => {
@@ -29,6 +29,18 @@ describe('roles', () => {
 
   it('DEFAULT_ROLE is RAZ-Dev', () => {
     expect(DEFAULT_ROLE).toBe('RAZ-Dev')
+  })
+
+  it('gives every role the global framework-version verification rules', () => {
+    expect(GLOBAL_AGENT_RULES).toContain('For Next.js 16 and newer')
+    expect(GLOBAL_AGENT_RULES).toContain('proxy.ts')
+    expect(GLOBAL_AGENT_RULES).toContain('middleware.ts is deprecated')
+    expect(GLOBAL_AGENT_RULES).toContain('OWASP checklists')
+    expect(GLOBAL_AGENT_RULES).toContain('do not queue a fix')
+
+    for (const id of ROLE_IDS) {
+      expect(ROLES[id].systemContext).toContain(GLOBAL_AGENT_RULES)
+    }
   })
 
   it('RAZ-QA extraGates require run_tests and check_coverage', () => {

@@ -7,6 +7,7 @@ import { promisify } from 'util'
 import { getRepoById, listMemoryRows, listTasks, saveChatMessage } from '@/lib/db'
 import { resolveClaudeSpawn } from '@/lib/claude-bin'
 import { getActiveAgentRunner } from '@/lib/agent'
+import { GLOBAL_AGENT_RULES } from '@/lib/roles'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -120,6 +121,8 @@ function buildSystemPrompt(
 You help the user explore their codebase, understand what RAZ agents have done, plan upcoming work, and decide which role and workflow to use. You have read-only access to the codebase via tools.
 
 You are NOT a task executor. You don't create worktrees, branches, or PRs. Your job is to think, explore, and advise. The user dispatches tasks through the task panel after talking with you.
+
+${GLOBAL_AGENT_RULES}
 
 ## RAZ Roles & Workflows
 - **RAZ-Dev** — Features, bug fixes, refactors. Workflows: feature, fix, refactor, test, strategy, self.

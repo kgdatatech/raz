@@ -1,6 +1,13 @@
 export const ROLE_IDS = ['RAZ-Dev', 'RAZ-Sec', 'RAZ-QA', 'RAZ-Ops', 'RAZ-Data'] as const
 export type RoleId = typeof ROLE_IDS[number]
 
+export const GLOBAL_AGENT_RULES = `FRAMEWORK VERSION VERIFICATION — REQUIRED FOR EVERY ROLE:
+- Read the installed framework version from package.json and the lockfile before making framework-specific claims.
+- For Next.js 16 and newer, root proxy.ts with an exported proxy() function is the supported file convention; middleware.ts is deprecated. Do NOT report a missing middleware.ts, an unreferenced proxy(), or proxy.ts's exported config as a defect merely because application code does not import it.
+- For Next.js 15 and older, verify the middleware.ts convention appropriate to that installed version. Never recommend renaming proxy.ts or middleware.ts without first confirming the version and official convention.
+- OWASP checklists, static scanners, grep results, and remembered framework behavior are leads, not proof. Confirm findings against current project dependencies, official documentation, build/runtime behavior, and response headers where applicable.
+- Do not assign severity, save a finding to memory, generate a report, or create a remediation handoff for a framework-convention concern until it is verified. If verification is impossible, label it NEEDS VERIFICATION and do not queue a fix.`
+
 export interface RoleDefinition {
   id:               RoleId
   label:            string
@@ -51,7 +58,9 @@ HANDOFF RULES — mandatory after task_complete:
 - workflow=feature / fix / refactor / self → handoff_to_role: RAZ-QA, workflow: test. Tell QA what you changed and what to verify.
 - workflow=strategy → handoff_to_role: RAZ-Dev, workflow: feature. The handoff description IS the implementation plan — be specific.
 - workflow=test → handoff_to_role: RAZ-Ops, workflow: audit. Let Ops verify build health and deployment readiness.
-Skip the handoff ONLY for pure doc/comment/config-only changes where no code logic was touched.`,
+Skip the handoff ONLY for pure doc/comment/config-only changes where no code logic was touched.
+
+${GLOBAL_AGENT_RULES}`,
   },
 
   'RAZ-Sec': {
@@ -86,7 +95,9 @@ Mark any finding that depends on framework convention as NEEDS VERIFICATION if y
 
 AFTER generate_report: always call handoff_to_role to propose RAZ-Dev to remediate the findings.
 In the handoff description, list the top CRITICAL and HIGH findings (one line each) so RAZ-Dev knows what to fix.
-Workflow: use 'fix' if the issues are concrete code changes, 'feature' if new infrastructure is needed.`,
+Workflow: use 'fix' if the issues are concrete code changes, 'feature' if new infrastructure is needed.
+
+${GLOBAL_AGENT_RULES}`,
   },
 
   'RAZ-QA': {
@@ -145,7 +156,9 @@ HANDOFF RULES — mandatory after task_complete:
 - workflow=test, all tests pass → handoff_to_role: RAZ-Ops, workflow: audit. Summary: how many tests passed, coverage %.
 - workflow=test, tests failing → handoff_to_role: RAZ-Dev, workflow: fix. List every failing test name and exact error.
 - workflow=fix → handoff_to_role: RAZ-Ops, workflow: audit.
-- workflow=audit (code review) → see CODE REVIEW WORKFLOW above.`,
+- workflow=audit (code review) → see CODE REVIEW WORKFLOW above.
+
+${GLOBAL_AGENT_RULES}`,
   },
 
   'RAZ-Ops': {
@@ -180,7 +193,9 @@ Use this decision tree:
 - Missing or failing tests → RAZ-QA (test workflow)
 - Schema or migration issues → RAZ-Data (feature workflow)
 - Multiple concerns → pick the highest priority one and mention the others in the description
-Include a 2-3 sentence summary of the top findings in the handoff description so the next agent has immediate context.`,
+Include a 2-3 sentence summary of the top findings in the handoff description so the next agent has immediate context.
+
+${GLOBAL_AGENT_RULES}`,
   },
 
   'RAZ-Data': {
@@ -210,7 +225,9 @@ Always call validate_migration on any SQL file you write or modify.
 Always run security_scan — connection strings and credentials are the top threat in data code.
 
 HANDOFF RULES — mandatory after task_complete:
-- workflow=feature / fix / refactor → handoff_to_role: RAZ-QA, workflow: test. Tell QA which tables/columns changed and what integrity to verify.`,
+- workflow=feature / fix / refactor → handoff_to_role: RAZ-QA, workflow: test. Tell QA which tables/columns changed and what integrity to verify.
+
+${GLOBAL_AGENT_RULES}`,
   },
 }
 

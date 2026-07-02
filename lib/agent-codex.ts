@@ -78,6 +78,7 @@ function buildPrompt(task: AgentTask, worktreePath: string): string {
 
   return [
     `You are running inside RAZ as the ${role.id} agent using the Codex runner.`,
+    role.systemContext,
     `Repository worktree: ${worktreePath}`,
     `Workflow: ${task.workflow}`,
     `Task: ${task.description}`,
