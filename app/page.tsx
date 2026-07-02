@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { ROLES, ROLE_IDS, type RoleId, DEFAULT_ROLE } from '@/lib/roles'
+import { getAgentsDocumentationPreset } from '@/lib/quick-tasks'
 import BrainView from './components/BrainView'
 import { detectIntent, type DispatchResult } from '@/lib/dispatch'
 
@@ -1335,7 +1336,12 @@ export default function RazDashboard() {
                   <div className="border-t border-gray-100">
                     {/* Scaffold AGENTS.md */}
                     <button
-                      onClick={() => { setRole('RAZ-Ops'); setWorkflow('strategy'); setTask("Read package.json, README, and config files to understand the project stack, then write an AGENTS.md file documenting: framework and version, key commands (dev, build, test, lint), database and migration conventions, required environment variables, and any critical rules an AI agent must follow when working in this codebase.") }}
+                      onClick={() => {
+                        const preset = getAgentsDocumentationPreset(razMode, 'scaffold')
+                        setRole(preset.role)
+                        setWorkflow(preset.workflow)
+                        setTask(preset.desc)
+                      }}
                       className="w-full text-left px-3 py-2 hover:bg-indigo-50 border-b border-gray-100 transition-colors">
                       <span className="text-[9px] font-semibold text-indigo-600">⊞ Scaffold AGENTS.md</span>
                       <p className="text-[8px] text-gray-400 mt-0.5">Document this repo's stack and conventions</p>
@@ -1349,7 +1355,7 @@ export default function RazDashboard() {
                       { label: 'Full system audit',    role: 'RAZ-Ops' as RoleId, workflow: 'self',     desc: 'Audit the RAZ codebase (lib/agent-cc.ts, lib/mcp-server.ts, lib/db.ts, app/page.tsx) for gaps, bugs, and missing capabilities. Write a findings report with mcp__raz__generate_report. Then handoff to RAZ-Dev to implement the highest-priority improvement.' },
                       { label: 'Write RAZ tests',      role: 'RAZ-QA'  as RoleId, workflow: 'test',     desc: 'Examine lib/db.ts, lib/agent-cc.ts, lib/mcp-server.ts, and app/api/ routes. Write comprehensive tests for any untested functions — DB migrations, config functions, API routes. Use Vitest. All tests must pass.' },
                       { label: 'Improve system prompt',role: 'RAZ-Ops' as RoleId, workflow: 'self',     desc: 'Read lib/agent-cc.ts buildSystemPrompt() function. Analyze the current system prompt for gaps in agent instructions. Propose and implement improvements to the MANDATORY PHASE ORDER, tool descriptions, and quality rules. Ask user before editing agent-cc.ts core loop.' },
-                      { label: 'Update AGENTS.md',     role: 'RAZ-Ops' as RoleId, workflow: 'strategy', desc: 'Read all files in lib/ and app/api/ to understand every capability RAZ has. Update or create AGENTS.md documenting the full tech stack, all available MCP tools with descriptions, key environment variables, and any rules an agent must follow when working in this repo.' },
+                      { label: 'Update AGENTS.md',     ...getAgentsDocumentationPreset(razMode, 'update-raz') },
                     ].map((q) => (
                       <button key={q.label} onClick={() => { setRole(q.role); setWorkflow(q.workflow); setTask(q.desc) }}
                         className="w-full text-left px-3 py-2 hover:bg-violet-50 border-t border-gray-100 transition-colors">
