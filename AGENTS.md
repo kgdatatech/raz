@@ -84,7 +84,7 @@ raziel/
 ## Database & Migrations
 
 - **File:** `lib/db.ts`
-- **Current schema version:** 11 (stored in `PRAGMA user_version`)
+- **Current schema version:** 17 (stored in `PRAGMA user_version`)
 - **Migration pattern:** `if (VERSION < N) { db.exec(...); db.exec('PRAGMA user_version = N') }`
 - **WAL mode + FK enforcement:** Set on startup
 - **Startup safety:** Tasks stuck in `running` are auto-failed on server restart
@@ -116,6 +116,8 @@ Always wrap `ALTER TABLE` in try/catch — SQLite has no `ADD COLUMN IF NOT EXIS
 | `NEXT_PUBLIC_RAZ_RUNNER` | No | Set to `cc` to use the Claude Code CLI runner |
 
 Copy `.env.example` → `.env.local` to get started.
+
+**Spend caps** (`lib/spend.ts`, stored in `system_config`): `spend_daily_cap_usd` (default 10) stops the queue runner from claiming tasks for the rest of the UTC day once cumulative reported cost reaches it; `spend_task_cap_usd` (default 2) aborts a running agent whose reported cost crosses it (fails the task, no failure-strategy queued). A value of `0` disables that cap. Both are editable via `POST /api/config`; current state is in `GET /api/status` under `spend`.
 
 ---
 

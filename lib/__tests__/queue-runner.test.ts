@@ -45,6 +45,12 @@ vi.mock('../memory-tasks', () => ({
   seedMemoryTasks: vi.fn().mockResolvedValue(0),
 }))
 
+vi.mock('../spend', () => ({
+  isDailyCapReached: vi.fn(() => false),
+  getTaskCapUsd:     vi.fn(() => 2),
+  recordTaskSpend:   vi.fn(),
+}))
+
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
 }))
@@ -61,6 +67,7 @@ import { runAgent } from '../agent'
 import { pushBranchAndOpenPR, mergePR, getPRStatus } from '../github'
 import { seedHealthTasks } from '../health-scan'
 import { seedMemoryTasks } from '../memory-tasks'
+import { isDailyCapReached, getTaskCapUsd, recordTaskSpend } from '../spend'
 import { execSync } from 'child_process'
 import type { TaskRow, RepoRow } from '../db'
 import type { AgentEvent } from '../agent'
@@ -184,6 +191,8 @@ describe('processQueue()', () => {
     vi.mocked(getTask).mockReturnValue(null)
     vi.mocked(hasRunningDuplicate).mockReturnValue(false)
     vi.mocked(hasRecentCompletion).mockReturnValue(false)
+    vi.mocked(isDailyCapReached).mockReturnValue(false)
+    vi.mocked(getTaskCapUsd).mockReturnValue(2)
     vi.mocked(mergePR).mockResolvedValue(undefined)
     vi.mocked(pushBranchAndOpenPR).mockResolvedValue('https://github.com/owner/repo/pull/99')
     // Default execSync return: '' → git fetch ignored; rev-list parseInt('',10)||0 = 0 commits
@@ -218,6 +227,85 @@ describe('processQueue()', () => {
     it('proceeds to poll the queue when mode is "auto" and not paused', async () => {
       await vi.advanceTimersByTimeAsync(5_000)
       expect(claimNextQueuedTask).toHaveBeenCalled()
+    })
+
+    it('skips when the daily spend cap is reached', async () => {
+      vi.mocked(isDailyCapReached).mockReturnValue(true)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(claimNextQueuedTask).not.toHaveBeenCalled()
+    })
+  })
+
+  // ── Spend caps ────────────────────────────────────────────────────────────
+
+  describe('spend caps', () => {
+    beforeEach(() => {
+      vi.mocked(claimNextQueuedTask).mockReturnValue(makeTask())
+    })
+
+    it('records reported task cost after a normal completion', async () => {
+      vi.mocked(runAgent).mockImplementation(async (_task, onEvent) => {
+        onEvent({ type: 'usage',    message: '~$0.4200', data: { costUsd: 0.42 } })
+        onEvent({ type: 'complete', message: 'done',     data: { files_changed: [], costUsd: 0.55 } })
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(completeTask).toHaveBeenCalled()
+      expect(recordTaskSpend).toHaveBeenCalledWith(0.55)
+    })
+
+    it('records spend even when the agent fails', async () => {
+      vi.mocked(runAgent).mockImplementation(async (_task, onEvent) => {
+        onEvent({ type: 'usage', message: '~$0.3000', data: { costUsd: 0.3 } })
+        throw new Error('subprocess crash')
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(failTask).toHaveBeenCalledWith('task-1', expect.stringContaining('subprocess crash'))
+      expect(recordTaskSpend).toHaveBeenCalledWith(0.3)
+    })
+
+    it('fails with a cost-cap message and no failure strategy when cost crosses the task cap', async () => {
+      vi.mocked(runAgent).mockImplementation(async (_task, onEvent) => {
+        onEvent({ type: 'usage', message: '~$2.5000', data: { costUsd: 2.5 } })
+        // Runner returns without a complete event, as it does when aborted
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(failTask).toHaveBeenCalledWith(
+        'task-1', expect.stringContaining('per-task cap'),
+      )
+      expect(createQueuedTask).not.toHaveBeenCalled()
+      expect(recordTaskSpend).toHaveBeenCalledWith(2.5)
+    })
+
+    it('fails with a cost-cap message when the runner throws after the abort', async () => {
+      vi.mocked(runAgent).mockImplementation(async (_task, onEvent) => {
+        onEvent({ type: 'usage', message: '~$3.0000', data: { costUsd: 3 } })
+        throw new Error('Task cancelled.')
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(failTask).toHaveBeenCalledWith(
+        'task-1', expect.stringContaining('per-task cap'),
+      )
+      expect(createQueuedTask).not.toHaveBeenCalled()
+    })
+
+    it('still completes normally when cost crosses the cap on the complete event itself', async () => {
+      vi.mocked(runAgent).mockImplementation(async (_task, onEvent) => {
+        onEvent({ type: 'complete', message: 'done', data: { files_changed: [], costUsd: 2.5 } })
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(completeTask).toHaveBeenCalledWith('task-1', null, 'done', [])
+      expect(failTask).not.toHaveBeenCalled()
+    })
+
+    it('never aborts when the task cap is 0 (disabled)', async () => {
+      vi.mocked(getTaskCapUsd).mockReturnValue(0)
+      vi.mocked(runAgent).mockImplementation(async (_task, onEvent) => {
+        onEvent({ type: 'usage',    message: '~$50.0000', data: { costUsd: 50 } })
+        onEvent({ type: 'complete', message: 'done',      data: { files_changed: [] } })
+      })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(completeTask).toHaveBeenCalledWith('task-1', null, 'done', [])
+      expect(recordTaskSpend).toHaveBeenCalledWith(50)
     })
   })
 
@@ -346,6 +434,7 @@ describe('processQueue()', () => {
           role:        'RAZ-Dev',
         }),
         expect.any(Function),
+        expect.any(AbortSignal),
       )
     })
 

@@ -93,6 +93,19 @@ Within the same priority tier, tasks run FIFO.
 
 ---
 
+## Spend caps
+
+Autonomous mode can generate its own work indefinitely, so API spend is capped in two ways:
+
+| Cap | Default | Behavior when hit |
+|---|---|---|
+| **Daily** (`spend_daily_cap_usd`) | $10 | Queue stops claiming tasks until the next UTC day |
+| **Per-task** (`spend_task_cap_usd`) | $2 | The running agent is aborted and the task fails with a cost-cap error (no retry strategy is queued) |
+
+Set either cap to `0` to disable it. Caps are editable via `POST /api/config`, and current spend is reported in `GET /api/status` under `spend`. Cost is accumulated from what each runner reports per task.
+
+---
+
 ## Setup
 
 ```bash

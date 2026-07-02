@@ -34,6 +34,13 @@ export async function POST(req: NextRequest) {
     if (!['0', '1'].includes(configValue)) {
       return NextResponse.json({ error: 'Invalid pause state.' }, { status: 400 })
     }
+  } else if (configKey === 'spend_daily_cap_usd' || configKey === 'spend_task_cap_usd') {
+    const cap = Number(configValue)
+    if (!Number.isFinite(cap) || cap < 0) {
+      return NextResponse.json({ error: 'Invalid spend cap — must be a number >= 0 (0 disables the cap).' }, { status: 400 })
+    }
+    setConfig(configKey, String(cap))
+    return NextResponse.json({ ok: true })
   } else if (configKey === 'agent_runner') {
     const runner = normalizeAgentRunner(configValue)
     if (!runner) return NextResponse.json({ error: 'Invalid agent runner.' }, { status: 400 })

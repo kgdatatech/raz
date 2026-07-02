@@ -217,6 +217,14 @@ if (VERSION < 16) {
   db.exec('PRAGMA user_version = 16')
 }
 
+if (VERSION < 17) {
+  db.exec(`
+    INSERT OR IGNORE INTO system_config (key, value) VALUES ('spend_daily_cap_usd', '10');
+    INSERT OR IGNORE INTO system_config (key, value) VALUES ('spend_task_cap_usd', '2');
+  `)
+  db.exec('PRAGMA user_version = 17')
+}
+
 // ─── Priority ─────────────────────────────────────────────────────────────────
 
 export const PRIORITY = {

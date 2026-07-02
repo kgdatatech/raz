@@ -7,6 +7,7 @@ import {
   PRIORITY, type TaskRow, type RepoRow,
 } from './db'
 import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
+import { isDailyCapReached, getTaskCapUsd, recordTaskSpend } from './spend'
 import { seedMemoryTasks } from './memory-tasks'
 import { runAgent } from './agent'
 import { getActiveAgentRunner, isAgentRunnerAvailable, normalizeAgentRunner } from './agent'
@@ -250,6 +251,7 @@ async function processQueue(): Promise<void> {
   const mode = getConfig('raz_mode') ?? 'standard'
   if (mode === 'standard') return
   if (getConfig('task_paused') === '1') return
+  if (isDailyCapReached()) return
 
   const task = claimNextQueuedTask(workerId)
   if (!task) {
@@ -304,6 +306,12 @@ async function processQueue(): Promise<void> {
   const logBuffer: object[] = []
   let completionData: Record<string, unknown> | undefined
 
+  // Per-task cost ceiling: runners report cumulative costUsd in usage/complete
+  // events; crossing the cap aborts the run instead of letting it keep spending.
+  const taskCapUsd = getTaskCapUsd()
+  const costAbort  = new AbortController()
+  let   taskCostUsd = 0
+
   try {
     // Fetch so origin/<baseBranch> is current before the worktree is created.
     // Do NOT merge into the local working tree — that would trigger Next.js HMR.
@@ -326,10 +334,22 @@ async function processQueue(): Promise<void> {
       },
       (event) => {
         if (event.type !== 'tool_result') logBuffer.push({ ...event, ts: Date.now() })
+        if (event.type === 'usage' || event.type === 'complete') {
+          const reported = Number(event.data?.costUsd)
+          if (Number.isFinite(reported) && reported > taskCostUsd) taskCostUsd = reported
+          if (taskCapUsd > 0 && taskCostUsd >= taskCapUsd && !costAbort.signal.aborted) costAbort.abort()
+        }
         if (event.type === 'usage')    saveTaskLog(task.id, logBuffer)
         if (event.type === 'complete') completionData = { ...event.data, summary: event.message }
       },
+      costAbort.signal,
     )
+
+    if (costAbort.signal.aborted && !completionData) {
+      saveTaskLog(task.id, logBuffer)
+      failTask(task.id, `Stopped — task cost $${taskCostUsd.toFixed(2)} reached the per-task cap ($${taskCapUsd.toFixed(2)})`)
+      return
+    }
 
     saveTaskLog(task.id, logBuffer)
 
@@ -416,10 +436,16 @@ async function processQueue(): Promise<void> {
     }
   } catch (err) {
     saveTaskLog(task.id, logBuffer)
-    const reason = String(err)
-    failTask(task.id, reason)
-    queueFailureStrategy(task, repo, reason)
+    if (costAbort.signal.aborted) {
+      // Cost-cap abort — no failure strategy: investigating would only spend more.
+      failTask(task.id, `Stopped — task cost $${taskCostUsd.toFixed(2)} reached the per-task cap ($${taskCapUsd.toFixed(2)})`)
+    } else {
+      const reason = String(err)
+      failTask(task.id, reason)
+      queueFailureStrategy(task, repo, reason)
+    }
   } finally {
+    recordTaskSpend(taskCostUsd)
     clearInterval(heartbeat)
     isProcessing = false
   }
