@@ -6,11 +6,12 @@ vi.mock('../db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db')>()
   return {
     ...actual,
-    getTask:          vi.fn(),
-    createQueuedTask: vi.fn(),
-    activateHandoffs: vi.fn(),
-    completeTask:     vi.fn(),
-    failTask:         vi.fn(),
+    getTask:            vi.fn(),
+    createQueuedTask:   vi.fn(),
+    activateHandoffs:   vi.fn(),
+    completeTask:       vi.fn(),
+    failTask:           vi.fn(),
+    hasActiveDuplicate: vi.fn(),
   }
 })
 
@@ -22,8 +23,8 @@ vi.mock('../github', () => ({
 
 vi.mock('child_process', () => ({ execSync: vi.fn() }))
 
-import { parseCIWaitRetry, handleReviewGate, handleCIGate } from '../queue-runner'
-import { getTask, createQueuedTask, activateHandoffs } from '../db'
+import { parseCIWaitRetry, handleReviewGate, handleCIGate, isMergeConflictError, queueConflictFix } from '../queue-runner'
+import { getTask, createQueuedTask, activateHandoffs, hasActiveDuplicate, PRIORITY } from '../db'
 import { getPRStatus, mergePR } from '../github'
 import type { TaskRow, RepoRow } from '../db'
 
@@ -100,7 +101,13 @@ function defaultPRStatus(): Awaited<ReturnType<typeof getPRStatus>> {
     failingChecks:  [] as string[],
     checkCount:     1,
     url:            'https://github.com/owner/repo/pull/42',
+    mergeableState: 'clean',
+    headBranch:     'raz-dev/feature-x',
   }
+}
+
+function makeConflictError(): Error & { status: number } {
+  return Object.assign(new Error('Pull Request is not mergeable'), { status: 405 })
 }
 
 // ── parseCIWaitRetry ──────────────────────────────────────────────────────────
@@ -284,5 +291,106 @@ describe('handleCIGate()', () => {
     expect(fixCall?.[4]).toBe('fix')
     expect(fixCall?.[5]).toBe('RAZ-Dev')
     expect(fixCall?.[2]).toContain('typecheck: failure')
+  })
+})
+
+// ── Merge-conflict recovery ───────────────────────────────────────────────────
+
+describe('merge-conflict recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getTask).mockReturnValue(makeParentTask())
+  })
+
+  describe('handleReviewGate()', () => {
+    it('queues a conflict fix on the PR branch instead of merging when mergeable_state is dirty', async () => {
+      vi.mocked(getPRStatus).mockResolvedValue(
+        makePRStatus({ approvals: 1, ciStatus: 'passing', mergeableState: 'dirty' }),
+      )
+      await handleReviewGate(makeTask(), REPO)
+      expect(mergePR).not.toHaveBeenCalled()
+      const fixCall = vi.mocked(createQueuedTask).mock.calls[0]
+      expect(fixCall?.[2]).toContain('Resolve merge conflicts on PR #42')
+      expect(fixCall?.[3]).toBe('raz-dev/feature-x') // the PR's own branch
+      expect(fixCall?.[4]).toBe('fix')
+      expect(fixCall?.[5]).toBe('RAZ-Dev')
+      expect(fixCall?.[8]).toBe(PRIORITY.HIGH)
+    })
+
+    it('queues a conflict fix when the merge call itself fails with a conflict (race)', async () => {
+      vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ approvals: 1, ciStatus: 'passing' }))
+      vi.mocked(mergePR).mockRejectedValue(makeConflictError())
+      await handleReviewGate(makeTask(), REPO)
+      const fixCall = vi.mocked(createQueuedTask).mock.calls[0]
+      expect(fixCall?.[2]).toContain('Resolve merge conflicts on PR #42')
+      expect(activateHandoffs).not.toHaveBeenCalled()
+    })
+
+    it('rethrows non-conflict merge errors', async () => {
+      vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ approvals: 1, ciStatus: 'passing' }))
+      vi.mocked(mergePR).mockRejectedValue(new Error('network timeout'))
+      await expect(handleReviewGate(makeTask(), REPO)).rejects.toThrow('network timeout')
+      expect(createQueuedTask).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('handleCIGate()', () => {
+    it('queues a conflict fix instead of merging when mergeable_state is dirty', async () => {
+      vi.mocked(getPRStatus).mockResolvedValue(
+        makePRStatus({ ciStatus: 'passing', mergeableState: 'dirty' }),
+      )
+      await handleCIGate(makeCIWaitTask(1), REPO, 42)
+      expect(mergePR).not.toHaveBeenCalled()
+      const fixCall = vi.mocked(createQueuedTask).mock.calls[0]
+      expect(fixCall?.[2]).toContain('Resolve merge conflicts on PR #42')
+      expect(fixCall?.[3]).toBe('raz-dev/feature-x')
+      expect(fixCall?.[8]).toBe(PRIORITY.HIGH)
+    })
+
+    it('queues a conflict fix when the merge call itself fails with a conflict (race)', async () => {
+      vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ ciStatus: 'passing' }))
+      vi.mocked(mergePR).mockRejectedValue(makeConflictError())
+      await handleCIGate(makeCIWaitTask(1), REPO, 42)
+      const fixCall = vi.mocked(createQueuedTask).mock.calls[0]
+      expect(fixCall?.[2]).toContain('Resolve merge conflicts on PR #42')
+    })
+  })
+
+  describe('queueConflictFix()', () => {
+    it('skips when an identical conflict-fix task is already active', () => {
+      vi.mocked(hasActiveDuplicate).mockReturnValueOnce(true)
+      queueConflictFix(42, 'raz-dev/feature-x', REPO, 'caller-id', 'sdk')
+      expect(createQueuedTask).not.toHaveBeenCalled()
+    })
+
+    it('skips when the PR branch is unknown', () => {
+      queueConflictFix(42, '', REPO, 'caller-id', 'sdk')
+      expect(createQueuedTask).not.toHaveBeenCalled()
+    })
+
+    it('mentions the base branch in the task instructions', () => {
+      queueConflictFix(42, 'raz-dev/feature-x', REPO, 'caller-id', 'sdk')
+      const fixCall = vi.mocked(createQueuedTask).mock.calls[0]
+      expect(fixCall?.[2]).toContain('git merge origin/master')
+    })
+  })
+
+  describe('isMergeConflictError()', () => {
+    it('detects HTTP 405 from the GitHub API', () => {
+      expect(isMergeConflictError(makeConflictError())).toBe(true)
+      expect(isMergeConflictError(Object.assign(new Error('nope'), { status: 405 }))).toBe(true)
+    })
+
+    it('detects "not mergeable" messages without a status', () => {
+      expect(isMergeConflictError(new Error('GitHub says: Pull Request is not mergeable'))).toBe(true)
+      expect(isMergeConflictError(new Error('merge conflict between branches'))).toBe(true)
+    })
+
+    it('rejects unrelated errors', () => {
+      expect(isMergeConflictError(new Error('network timeout'))).toBe(false)
+      expect(isMergeConflictError(Object.assign(new Error('rate limited'), { status: 403 }))).toBe(false)
+      expect(isMergeConflictError(null)).toBe(false)
+      expect(isMergeConflictError('string error')).toBe(false)
+    })
   })
 })

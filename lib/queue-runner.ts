@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import {
   getConfig, claimNextQueuedTask, heartbeatTask, getRepoById, getTask, listRepos,
   completeTask, failTask, saveTaskLog, activateHandoffs,
-  hasRunningDuplicate, hasRecentCompletion, createQueuedTask,
+  hasRunningDuplicate, hasRecentCompletion, hasActiveDuplicate, createQueuedTask,
   PRIORITY, type TaskRow, type RepoRow,
 } from './db'
 import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
@@ -59,6 +59,46 @@ export function parseCIWaitRetry(description: string): number {
   return match ? parseInt(match[1]) : 1
 }
 
+// ── Merge-conflict recovery ───────────────────────────────────────────────────
+
+export function isMergeConflictError(err: unknown): boolean {
+  const status  = (err as { status?: number } | null)?.status
+  const message = err instanceof Error ? err.message : String(err)
+  return status === 405 || /not mergeable|merge conflict/i.test(message)
+}
+
+// Queues a RAZ-Dev task on the PR's own branch (the worktree setup checks out
+// an existing branch, so the PR's commits are preserved) to merge the base
+// branch in and resolve conflicts. Deterministic description → deduped.
+export function queueConflictFix(
+  prNumber: number,
+  prBranch: string,
+  repo:     RepoRow,
+  callerTaskId: string,
+  runner:   string | null,
+): void {
+  if (!prBranch) return
+  const description = [
+    `Resolve merge conflicts on PR #${prNumber} (branch ${prBranch}):`,
+    `run "git merge origin/${repo.default_branch}", read each conflicted file,`,
+    `resolve the conflict markers preserving both the PR's intent and the latest ${repo.default_branch} changes,`,
+    `run "git add -A", verify with run_build and run_tests, then task_complete. Do not force-push.`,
+  ].join(' ')
+  if (hasActiveDuplicate(repo.id, description)) return
+  createQueuedTask(
+    randomUUID(),
+    repo.id,
+    description,
+    prBranch,
+    'fix',
+    'RAZ-Dev',
+    callerTaskId,
+    'queued',
+    PRIORITY.HIGH,
+    runner,
+  )
+}
+
 // ── Merge + post-merge audit ──────────────────────────────────────────────────
 // Shared by both handleReviewGate and handleCIGate to avoid duplication.
 async function performMerge(
@@ -101,7 +141,17 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
   }
 
   if (status.ciStatus === 'passing' || status.ciStatus === 'no_checks') {
-    await performMerge(prNumber, parentTaskId, task.id, repo)
+    if (status.mergeableState === 'dirty') {
+      queueConflictFix(prNumber, status.headBranch, repo, task.id, taskRunner(parentTask, task))
+      return
+    }
+    try {
+      await performMerge(prNumber, parentTaskId, task.id, repo)
+    } catch (err) {
+      // Race: PR became unmergeable between the status check and the merge call
+      if (!isMergeConflictError(err)) throw err
+      queueConflictFix(prNumber, status.headBranch, repo, task.id, taskRunner(parentTask, task))
+    }
     return
   }
 
@@ -188,7 +238,17 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
   if (approved) {
     // QA approved — now check CI before merging
     if (status.ciStatus === 'passing' || status.ciStatus === 'no_checks') {
-      await performMerge(prNumber, parentTask.id, task.id, repo)
+      if (status.mergeableState === 'dirty') {
+        queueConflictFix(prNumber, status.headBranch, repo, task.id, taskRunner(parentTask, task))
+        return
+      }
+      try {
+        await performMerge(prNumber, parentTask.id, task.id, repo)
+      } catch (err) {
+        // Race: PR became unmergeable between the status check and the merge call
+        if (!isMergeConflictError(err)) throw err
+        queueConflictFix(prNumber, status.headBranch, repo, task.id, taskRunner(parentTask, task))
+      }
     } else if (status.ciStatus === 'pending') {
       // CI still running — queue a lightweight poller, no agent needed
       const waitId = randomUUID()

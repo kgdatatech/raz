@@ -16,8 +16,16 @@ export interface PROptions {
 export async function pushBranchAndOpenPR(opts: PROptions): Promise<string> {
   const { repoPath, owner, repo, branch, baseBranch, title, body } = opts
   execSync(`git push origin "${branch}"`, { cwd: repoPath })
-  const pr = await octokit.pulls.create({ owner, repo, title, body, head: branch, base: baseBranch, draft: false })
-  return pr.data.html_url
+  try {
+    const pr = await octokit.pulls.create({ owner, repo, title, body, head: branch, base: baseBranch, draft: false })
+    return pr.data.html_url
+  } catch (err) {
+    // A PR already open for this branch (e.g. a conflict-fix task pushing to an
+    // existing PR branch) — reuse it instead of failing after the push succeeded.
+    const existing = await octokit.pulls.list({ owner, repo, head: `${owner}:${branch}`, state: 'open' })
+    if (existing.data[0]) return existing.data[0].html_url
+    throw err
+  }
 }
 
 export async function getRepoInfo(owner: string, repo: string) {
@@ -111,6 +119,9 @@ export async function getPRStatus(owner: string, repo: string, prNumber: number)
     failingChecks:  failedChecks.map((c) => `${c.name}: ${c.conclusion}`),
     checkCount:     checks.length,
     url:            pr.html_url,
+    // 'dirty' = merge conflicts with base; 'unknown' while GitHub is still computing
+    mergeableState: pr.mergeable_state ?? 'unknown',
+    headBranch:     pr.head.ref,
   }
 }
 

@@ -19,6 +19,7 @@ vi.mock('../db', async (importOriginal) => {
     activateHandoffs:    vi.fn(),
     hasRunningDuplicate: vi.fn(),
     hasRecentCompletion: vi.fn(),
+    hasActiveDuplicate:  vi.fn(),
     createQueuedTask:    vi.fn(),
   }
 })
@@ -125,6 +126,7 @@ function makePRStatus(
     reviewDecision: 'none', approvals: 0, rejections: 0,
     ciStatus: 'passing', failingChecks: [] as string[],
     checkCount: 1, url: 'https://github.com/owner/repo/pull/42',
+    mergeableState: 'clean', headBranch: 'raz-dev/feature-x',
     ...overrides,
   }
 }
