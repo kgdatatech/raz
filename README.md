@@ -48,7 +48,7 @@ Every PR runs through a gate: RAZ-QA reviews it, CI must be green, then it merge
 | Human reviewer requests changes | Queues HIGH priority RAZ-Dev fix with feedback text |
 | Push to default branch | Queues RAZ-Ops health scan |
 
-**Autonomous health scan** — when the queue empties, RAZ scans the repo for TODOs/FIXMEs, source files missing test coverage, and open issues with no task. It queues what it finds.
+**Autonomous health scan** — when the queue empties, RAZ scans the repo for TODOs/FIXMEs, source files missing test coverage, and open issues with no task. It queues what it finds. Works on any repo layout (`src/`, monorepos) and any common language; test conventions are detected for TypeScript/JavaScript, Python, and Go. Repos with no tests at all get a single test-setup strategy task instead of per-file noise, and findings are capped per scan so large repos seed a steady trickle, not a flood.
 
 **Agent memory** — agents save findings as they work (e.g. `bug:login-crash`, `security:exposed-key`). RAZ reads those entries and converts actionable ones into queued tasks automatically.
 
