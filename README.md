@@ -135,6 +135,7 @@ npm run dev   # http://localhost:3000
 | Variable | Description |
 |---|---|
 | `RAZ_RUNNER` | `cc` to use the Claude Code CLI runner instead of the default SDK runner |
+| `RAZ_API_TOKEN` | **Set this before exposing RAZ outside localhost** (e.g. tunneling for webhooks). Locks every route except the webhook receiver, health check, and login. Browser: enter the token once at `/login`. API: `Authorization: Bearer <token>` or `x-raz-token` header. Unset = no auth (local use). |
 
 ---
 

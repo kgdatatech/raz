@@ -114,6 +114,7 @@ Always wrap `ALTER TABLE` in try/catch — SQLite has no `ADD COLUMN IF NOT EXIS
 | `GITHUB_TOKEN` | Yes | Fine-grained PAT — needs `repo`, `pull_requests`, `contents` |
 | `RAZ_DB_PATH` | No | Override SQLite path (default: `.raziel/raziel.db`) |
 | `NEXT_PUBLIC_RAZ_RUNNER` | No | Set to `cc` to use the Claude Code CLI runner |
+| `RAZ_API_TOKEN` | No | When set, `proxy.ts` requires this token on every route except `/api/webhook/github`, `/api/health`, and the `/login` flow. Send via `Authorization: Bearer`, `x-raz-token`, or the `raz_token` cookie set by `/login`. Unset = auth disabled (local use). |
 
 Copy `.env.example` → `.env.local` to get started.
 
