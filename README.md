@@ -65,7 +65,7 @@ Task queued
   → RAZ-QA reviews (pre-merge gate)
     → Approved: check CI
       → CI passing: merge
-      → CI pending: poll every 5s (up to 7.5 min)
+      → CI pending: poll every 30s (up to 45 min, one self-rescheduling task)
       → CI failing: queue CRITICAL RAZ-Dev fix
     → Changes requested: queue HIGH priority RAZ-Dev fix
   → RAZ-QA audits post-merge

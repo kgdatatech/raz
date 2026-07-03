@@ -263,22 +263,27 @@ describe('handleCIGate()', () => {
     expect(activateHandoffs).toHaveBeenCalledWith('dev-task-id')
   })
 
-  it('re-queues next ci_wait when CI is still pending and under retry limit', async () => {
+  it('asks to be rescheduled (no new task) when CI is still pending and under retry limit', async () => {
     vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ ciStatus: 'pending' }))
-    await handleCIGate(makeCIWaitTask(5), REPO, 42)
+    const outcome = await handleCIGate(makeCIWaitTask(5), REPO, 42)
+    expect(outcome).toBe('requeue')
     expect(mergePR).not.toHaveBeenCalled()
-    const waitCall = vi.mocked(createQueuedTask).mock.calls[0]
-    expect(waitCall?.[4]).toBe('ci_wait')
-    expect(waitCall?.[2]).toContain('CI wait #6')
+    expect(createQueuedTask).not.toHaveBeenCalled()
   })
 
   it('queues a RAZ-Dev fix when CI is still pending at max retries', async () => {
     vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ ciStatus: 'pending' }))
-    await handleCIGate(makeCIWaitTask(90), REPO, 42)
+    const outcome = await handleCIGate(makeCIWaitTask(90), REPO, 42)
+    expect(outcome).toBe('done')
     expect(mergePR).not.toHaveBeenCalled()
     const fixCall = vi.mocked(createQueuedTask).mock.calls[0]
     expect(fixCall?.[4]).toBe('fix')
     expect(fixCall?.[2]).toContain('timeout')
+  })
+
+  it('returns done after merging when CI passes', async () => {
+    vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ ciStatus: 'passing' }))
+    await expect(handleCIGate(makeCIWaitTask(1), REPO, 42)).resolves.toBe('done')
   })
 
   it('queues RAZ-Dev fix with check names when CI fails', async () => {

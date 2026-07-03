@@ -84,7 +84,7 @@ raziel/
 ## Database & Migrations
 
 - **File:** `lib/db.ts`
-- **Current schema version:** 18 (stored in `PRAGMA user_version`)
+- **Current schema version:** 19 (stored in `PRAGMA user_version`)
 - **Migration pattern:** `if (VERSION < N) { db.exec(...); db.exec('PRAGMA user_version = N') }`
 - **WAL mode + FK enforcement:** Set on startup
 - **Startup safety:** Tasks stuck in `running` are auto-failed on server restart
@@ -93,6 +93,9 @@ raziel/
 - `pending` — handoff task created but waiting for parent's PR to merge before it can start.
   `activateHandoffs(parentTaskId)` flips it to `queued` after merge.
   The queue runner only picks up `queued` tasks, never `pending`.
+- `run_after` (nullable datetime) — a `queued` task is only claimable once `run_after` has passed.
+  Used by ci_wait pollers: one row reschedules itself via `requeueTaskForRetry()` every 30s
+  instead of spawning a new task per poll.
 
 Adding a migration:
 ```ts

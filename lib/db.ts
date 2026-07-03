@@ -230,6 +230,11 @@ if (VERSION < 18) {
   db.exec('PRAGMA user_version = 18')
 }
 
+if (VERSION < 19) {
+  try { db.exec(`ALTER TABLE tasks ADD COLUMN run_after TEXT`) } catch {}
+  db.exec('PRAGMA user_version = 19')
+}
+
 // ─── Priority ─────────────────────────────────────────────────────────────────
 
 export const PRIORITY = {
@@ -272,6 +277,7 @@ export interface TaskRow {
   heartbeat_at?:  string | null
   attempt?:       number
   review_verdict?: string | null
+  run_after?:     string | null
   created_at:     string
   completed_at:   string | null
 }
@@ -311,7 +317,8 @@ export function getRepoById(id: number): RepoRow | null {
 
 export function getNextQueuedTask(): TaskRow | null {
   return (db.prepare(`
-    SELECT * FROM tasks WHERE status = 'queued'
+    SELECT * FROM tasks
+    WHERE status = 'queued' AND (run_after IS NULL OR run_after <= datetime('now'))
     ORDER BY priority DESC, created_at ASC
     LIMIT 1
   `).get() as TaskRow) ?? null
@@ -330,7 +337,7 @@ export function claimNextQueuedTask(workerId: string, leaseMinutes = 50): TaskRo
         completed_at = NULL
     WHERE id = (
       SELECT id FROM tasks
-      WHERE status = 'queued'
+      WHERE status = 'queued' AND (run_after IS NULL OR run_after <= datetime('now'))
       ORDER BY priority DESC, created_at ASC
       LIMIT 1
     )
@@ -391,12 +398,29 @@ export function createQueuedTask(
   status:   'queued' | 'pending' = 'queued',
   priority: PriorityLevel = PRIORITY.NORMAL,
   runner?:  string | null,
+  runAfterSeconds?: number,
 ): TaskRow {
+  const delay = runAfterSeconds && runAfterSeconds > 0 ? `+${Math.floor(runAfterSeconds)} seconds` : null
   db.prepare(`
-    INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id, priority, runner)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, repoId, description, branch, workflow, role, status, parentTaskId ?? null, priority, runner ?? null)
+    INSERT INTO tasks (id, repo_id, description, branch, workflow, role, status, parent_task_id, priority, runner, run_after)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now', ?) END)
+  `).run(id, repoId, description, branch, workflow, role, status, parentTaskId ?? null, priority, runner ?? null, delay, delay)
   return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as TaskRow
+}
+
+// Puts a claimed task back in the queue to run again after a delay — used by
+// pollers (ci_wait) so one row reschedules itself instead of spawning a chain.
+export function requeueTaskForRetry(taskId: string, delaySeconds: number, description?: string): void {
+  const modifier = `+${Math.max(1, Math.floor(delaySeconds))} seconds`
+  db.prepare(`
+    UPDATE tasks SET
+      status = 'queued',
+      run_after = datetime('now', ?),
+      description = COALESCE(?, description),
+      worker_id = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+      completed_at = NULL, error = NULL
+    WHERE id = ?
+  `).run(modifier, description ?? null, taskId)
 }
 
 export function activateHandoffs(parentTaskId: string): void {

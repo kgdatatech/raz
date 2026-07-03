@@ -4,6 +4,7 @@ import {
   getConfig, claimNextQueuedTask, heartbeatTask, getRepoById, getTask, listRepos,
   completeTask, failTask, saveTaskLog, activateHandoffs,
   hasRunningDuplicate, hasRecentCompletion, hasActiveDuplicate, createQueuedTask,
+  requeueTaskForRetry,
   PRIORITY, type TaskRow, type RepoRow,
 } from './db'
 import { seedHealthTasks, HEALTH_SCAN_INTERVAL } from './health-scan'
@@ -33,7 +34,9 @@ export function getActiveTaskCount(): number {
   return activeTasks.size
 }
 
-// Max number of CI wait retries before giving up (5s queue tick × 90 = 7.5 min)
+// CI polling: one ci_wait task reschedules itself via run_after every
+// CI_POLL_SECONDS, up to CI_WAIT_MAX checks (30s × 90 = 45 min) before giving up.
+export const CI_POLL_SECONDS = 30
 const CI_WAIT_MAX = 90
 
 // Workflows that should NOT trigger a failure strategy (to prevent infinite loops)
@@ -143,21 +146,23 @@ async function performMerge(
 
 // ── CI gate ───────────────────────────────────────────────────────────────────
 // Called instead of running an agent when workflow='ci_wait'.
-// Checks CI status and either merges, waits another tick, or queues a fix task.
-export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: number): Promise<void> {
+// Checks CI status and either merges, asks to be rescheduled ('requeue'), or
+// queues a fix task. 'requeue' means the caller should put the same task row
+// back in the queue with a run_after delay instead of completing it.
+export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: number): Promise<'requeue' | 'done'> {
   const parentTaskId = task.parent_task_id!
   const parentTask   = getTask(parentTaskId)
   const status       = await getPRStatus(repo.github_owner, repo.github_repo, prNumber)
 
   if (status.merged) {
     activateHandoffs(parentTaskId)
-    return
+    return 'done'
   }
 
   if (status.ciStatus === 'passing' || status.ciStatus === 'no_checks') {
     if (status.mergeableState === 'dirty') {
       queueConflictFix(prNumber, status.headBranch, repo, task.id, taskRunner(parentTask, task))
-      return
+      return 'done'
     }
     try {
       await performMerge(prNumber, parentTaskId, task.id, repo)
@@ -166,42 +171,28 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
       if (!isMergeConflictError(err)) throw err
       queueConflictFix(prNumber, status.headBranch, repo, task.id, taskRunner(parentTask, task))
     }
-    return
+    return 'done'
   }
 
   if (status.ciStatus === 'pending') {
     const retry = parseCIWaitRetry(task.description) + 1
-    if (retry <= CI_WAIT_MAX) {
-      const waitId = randomUUID()
-      createQueuedTask(
-        waitId,
-        repo.id,
-        `CI wait #${retry}: PR #${prNumber} — ${parentTask?.description.slice(0, 50) ?? ''}`,
-        `ci-wait/${prNumber}-${waitId.slice(0, 6)}`,
-        'ci_wait',
-        'RAZ-Ops',
-        parentTaskId,
-        'queued',
-        PRIORITY.NORMAL,
-        taskRunner(parentTask, task),
-      )
-    } else {
-      // Timed out — give up and queue a fix task
-      const fixId = randomUUID()
-      createQueuedTask(
-        fixId,
-        repo.id,
-        `Fix PR #${prNumber} CI timeout after ${Math.round(CI_WAIT_MAX * 5 / 60)} min: ${parentTask?.description.slice(0, 50) ?? ''}`,
-        `raz-dev/fix-ci-timeout-${prNumber}-${fixId.slice(0, 6)}`,
-        'fix',
-        'RAZ-Dev',
-        task.id,
-        'queued',
-        PRIORITY.HIGH,
-        taskRunner(parentTask, task),
-      )
-    }
-    return
+    if (retry <= CI_WAIT_MAX) return 'requeue'
+
+    // Timed out — give up and queue a fix task
+    const fixId = randomUUID()
+    createQueuedTask(
+      fixId,
+      repo.id,
+      `Fix PR #${prNumber} CI timeout after ${Math.round(CI_WAIT_MAX * CI_POLL_SECONDS / 60)} min: ${parentTask?.description.slice(0, 50) ?? ''}`,
+      `raz-dev/fix-ci-timeout-${prNumber}-${fixId.slice(0, 6)}`,
+      'fix',
+      'RAZ-Dev',
+      task.id,
+      'queued',
+      PRIORITY.HIGH,
+      taskRunner(parentTask, task),
+    )
+    return 'done'
   }
 
   // ciStatus === 'failing' — queue RAZ-Dev fix with check names (CRITICAL: blocks merge)
@@ -221,6 +212,7 @@ export async function handleCIGate(task: TaskRow, repo: RepoRow, prNumber: numbe
     PRIORITY.CRITICAL,
     taskRunner(parentTask, task),
   )
+  return 'done'
 }
 
 // ── Pre-merge gate ────────────────────────────────────────────────────────────
@@ -264,7 +256,8 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
         queueConflictFix(prNumber, status.headBranch, repo, task.id, taskRunner(parentTask, task))
       }
     } else if (status.ciStatus === 'pending') {
-      // CI still running — queue a lightweight poller, no agent needed
+      // CI still running — queue a lightweight poller that reschedules itself
+      // via run_after (one row for the whole wait, not a task chain)
       const waitId = randomUUID()
       createQueuedTask(
         waitId,
@@ -277,6 +270,7 @@ export async function handleReviewGate(task: TaskRow, repo: RepoRow): Promise<vo
         'queued',
         PRIORITY.NORMAL,
         taskRunner(parentTask, task),
+        CI_POLL_SECONDS,
       )
     } else {
       // CI is already failing — skip the wait, queue fix immediately (CRITICAL: blocks merge)
@@ -381,7 +375,13 @@ async function executeTask(task: TaskRow): Promise<void> {
       const parentTask = getTask(task.parent_task_id)
       const match      = parentTask?.pr_url?.match(/\/pull\/(\d+)/)
       const prNumber   = match ? parseInt(match[1]) : 0
-      if (prNumber) await handleCIGate(task, repo, prNumber)
+      const outcome    = prNumber ? await handleCIGate(task, repo, prNumber) : 'done'
+      if (outcome === 'requeue') {
+        // CI still running — reschedule this same row instead of spawning a new task
+        const retry = parseCIWaitRetry(task.description) + 1
+        requeueTaskForRetry(task.id, CI_POLL_SECONDS, task.description.replace(/CI wait #\d+/, `CI wait #${retry}`))
+        return
+      }
       completeTask(task.id, null, `CI gate check — ${task.description}`, [])
     } catch (err) {
       failTask(task.id, `CI gate error: ${err}`)

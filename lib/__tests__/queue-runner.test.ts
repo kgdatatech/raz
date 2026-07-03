@@ -21,6 +21,7 @@ vi.mock('../db', async (importOriginal) => {
     hasRecentCompletion: vi.fn(),
     hasActiveDuplicate:  vi.fn(),
     createQueuedTask:    vi.fn(),
+    requeueTaskForRetry: vi.fn(),
   }
 })
 
@@ -63,6 +64,7 @@ import {
   getConfig, claimNextQueuedTask, getRepoById, getTask, listRepos,
   completeTask, failTask, saveTaskLog, activateHandoffs,
   hasRunningDuplicate, hasRecentCompletion, createQueuedTask,
+  requeueTaskForRetry,
 } from '../db'
 import { runAgent } from '../agent'
 import { pushBranchAndOpenPR, mergePR, getPRStatus } from '../github'
@@ -466,6 +468,18 @@ describe('processQueue()', () => {
       await vi.advanceTimersByTimeAsync(5_000)
       expect(getPRStatus).not.toHaveBeenCalled()
       expect(completeTask).toHaveBeenCalledWith('ci-wait-1', null, expect.any(String), [])
+    })
+
+    it('reschedules the same row with a bumped retry count when CI is pending', async () => {
+      vi.mocked(getPRStatus).mockResolvedValue(makePRStatus({ ciStatus: 'pending' }))
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(requeueTaskForRetry).toHaveBeenCalledWith(
+        'ci-wait-1',
+        expect.any(Number),
+        expect.stringContaining('CI wait #2'),
+      )
+      expect(completeTask).not.toHaveBeenCalled()
+      expect(createQueuedTask).not.toHaveBeenCalled()
     })
   })
 
