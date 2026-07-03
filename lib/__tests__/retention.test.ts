@@ -98,11 +98,21 @@ describe('runRetentionSweep()', () => {
     expect(remaining.map((r) => r.id)).toEqual(['q-open'])
   })
 
+  it('prunes memory entries untouched for the retention window', () => {
+    db.prepare(`INSERT INTO memory (repo_id, key, value, updated_at) VALUES (?, 'stale:note', 'old', datetime('now', '-${RETENTION.memoryDays + 1} days'))`).run(repoId)
+    db.prepare(`INSERT INTO memory (repo_id, key, value) VALUES (?, 'fresh:note', 'new')`).run(repoId)
+
+    const stats = runRetentionSweep()
+    expect(stats.memoriesDeleted).toBe(1)
+    const remaining = db.prepare('SELECT key FROM memory').all() as { key: string }[]
+    expect(remaining.map((r) => r.key)).toEqual(['fresh:note'])
+  })
+
   it('is a no-op on a fresh database', () => {
     const stats = runRetentionSweep()
     expect(stats).toEqual({
       taskBlobsCleared: 0, prStatusDeleted: 0, chatMessagesDeleted: 0,
-      agentMessagesDeleted: 0, questionsDeleted: 0,
+      agentMessagesDeleted: 0, questionsDeleted: 0, memoriesDeleted: 0,
     })
   })
 })

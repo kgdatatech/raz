@@ -180,18 +180,39 @@ describe('seedMemoryTasks()', () => {
     expect(tasks[2]!.priority).toBe(PRIORITY.NORMAL)   // todo
   })
 
-  it('skips entries whose task was recently completed (dedup)', async () => {
+  it('consumes the memory entry once its task is queued (no infinite re-spawn)', async () => {
     setMemory(repo.id, 'bug:login', 'session drops')
 
-    // First seed — creates task
-    await seedMemoryTasks(repo)
-    const [task] = db.prepare("SELECT id FROM tasks").all() as { id: string }[]
-    db.prepare("UPDATE tasks SET status = 'complete', completed_at = datetime('now') WHERE id = ?").run(task!.id)
+    // First seed — creates the task and deletes the consumed finding
+    const result1 = await seedMemoryTasks(repo)
+    expect(result1.queued).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) as c FROM memory WHERE repo_id = ?').get(repo.id)).toEqual({ c: 0 })
 
-    // Second seed — should be deduped
+    // Second seed — nothing left to convert, even after the task completes
+    const [task] = db.prepare("SELECT id FROM tasks").all() as { id: string }[]
+    db.prepare("UPDATE tasks SET status = 'complete', completed_at = datetime('now', '-1 hour') WHERE id = ?").run(task!.id)
+    const result2 = await seedMemoryTasks(repo)
+    expect(result2.queued).toBe(0)
+    expect(result2.skipped).toBe(0)
+  })
+
+  it('skips (and keeps) a re-saved finding while its task is still active', async () => {
+    setMemory(repo.id, 'bug:login', 'session drops')
+    await seedMemoryTasks(repo)  // queues task, consumes memory
+
+    // Agent re-saves the same finding while the task is still queued
+    setMemory(repo.id, 'bug:login', 'session drops')
     const result2 = await seedMemoryTasks(repo)
     expect(result2.queued).toBe(0)
     expect(result2.skipped).toBe(1)
+    // Not consumed — the entry survives until its own task can be queued
+    expect(db.prepare('SELECT COUNT(*) as c FROM memory WHERE repo_id = ?').get(repo.id)).toEqual({ c: 1 })
+  })
+
+  it('does not consume unclassified fact-storage entries', async () => {
+    setMemory(repo.id, 'build-status', 'passing')
+    await seedMemoryTasks(repo)
+    expect(db.prepare('SELECT COUNT(*) as c FROM memory WHERE repo_id = ?').get(repo.id)).toEqual({ c: 1 })
   })
 
   it('reports unclassified entries separately from skipped', async () => {

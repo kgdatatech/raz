@@ -89,7 +89,7 @@ raziel/
 - **Migration pattern:** `if (VERSION < N) { db.exec(...); db.exec('PRAGMA user_version = N') }`
 - **WAL mode + FK enforcement:** Set on startup
 - **Startup safety:** Tasks stuck in `running` are auto-failed on server restart
-- **Retention** (`lib/retention.ts`, runs at startup + daily): task rows are never deleted, but `log_json`/`messages_json` blobs are cleared 14 days after completion; `pr_status` history (keeping the newest row per task), chat messages, agent messages, and answered questions are pruned at 30/30/60/30 days. Unanswered questions are never pruned.
+- **Retention** (`lib/retention.ts`, runs at startup + daily): task rows are never deleted, but `log_json`/`messages_json` blobs are cleared 14 days after completion; `pr_status` history (keeping the newest row per task), chat messages, agent messages, and answered questions are pruned at 30/30/60/30 days; memory entries untouched for 90 days are deleted (re-saving a key refreshes it). Unanswered questions are never pruned. Actionable memory findings (`bug:*`, `security:*`, …) are **consumed** (deleted) when `seedMemoryTasks` converts them into a queued task — the task becomes the source of truth.
 
 **Task statuses:** `running` | `queued` | `pending` | `complete` | `failed`
 - `pending` — handoff task created but waiting for parent's PR to merge before it can start.

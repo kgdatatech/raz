@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import {
   listMemoryRows, createQueuedTask, hasActiveDuplicate, hasRecentCompletion,
+  deleteMemory,
   PRIORITY, type RepoRow, type PriorityLevel,
 } from './db'
 import { type RoleId } from './roles'
@@ -126,6 +127,10 @@ export async function seedMemoryTasks(repo: RepoRow): Promise<MemoryTaskResult> 
       'queued',
       rule.priority,
     )
+
+    // Consume the finding — the queued task is now the source of truth.
+    // Leaving it would re-spawn the same task forever once dedup windows lapse.
+    deleteMemory(repo.id, row.key)
 
     result.queued++
     result.findings.push({ key: row.key, status: 'queued' })

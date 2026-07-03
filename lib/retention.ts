@@ -8,6 +8,7 @@ export const RETENTION = {
   chatMessageDays:      30,
   agentMessageDays:     60,
   answeredQuestionDays: 30,
+  memoryDays:           90,
 } as const
 
 export interface RetentionStats {
@@ -16,6 +17,7 @@ export interface RetentionStats {
   chatMessagesDeleted:  number
   agentMessagesDeleted: number
   questionsDeleted:     number
+  memoriesDeleted:      number
 }
 
 export function runRetentionSweep(): RetentionStats {
@@ -48,12 +50,19 @@ export function runRetentionSweep(): RetentionStats {
     WHERE answered_at IS NOT NULL AND answered_at < datetime('now', ?)
   `).run(`-${RETENTION.answeredQuestionDays} days`)
 
+  // Memory entries untouched for 90 days are presumed stale. Agents refresh
+  // updated_at whenever they re-save a key, so living knowledge survives.
+  const memories = db.prepare(`
+    DELETE FROM memory WHERE updated_at < datetime('now', ?)
+  `).run(`-${RETENTION.memoryDays} days`)
+
   return {
     taskBlobsCleared:     blobs.changes,
     prStatusDeleted:      pr.changes,
     chatMessagesDeleted:  chat.changes,
     agentMessagesDeleted: agentMsgs.changes,
     questionsDeleted:     questions.changes,
+    memoriesDeleted:      memories.changes,
   }
 }
 
