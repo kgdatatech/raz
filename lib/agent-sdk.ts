@@ -10,6 +10,7 @@ import {
   getRecentChatContext,
 } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
+import { getModelForRole, getModelPricing } from './models'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -531,10 +532,9 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     let totalCacheCreationTokens = 0
     const recentCalls: string[] = []
 
-    const INPUT_COST_PER_M         = 3.00
-    const OUTPUT_COST_PER_M        = 15.00
-    const CACHE_READ_COST_PER_M    = 0.30
-    const CACHE_WRITE_COST_PER_M   = 3.75
+    const model = getModelForRole(role)
+    const { inputPerM: INPUT_COST_PER_M, outputPerM: OUTPUT_COST_PER_M,
+            cacheReadPerM: CACHE_READ_COST_PER_M, cacheWritePerM: CACHE_WRITE_COST_PER_M } = getModelPricing(model)
 
     const systemBlock: Anthropic.TextBlockParam[] = [
       { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
@@ -569,7 +569,7 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
 
       const response = await callWithBackoff(
         () => anthropic.messages.create({
-          model:      'claude-sonnet-4-6',
+          model,
           max_tokens: 8096,
           system:     systemBlock,
           tools:      roleTools as unknown as Anthropic.Tool[],

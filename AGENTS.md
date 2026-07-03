@@ -118,6 +118,8 @@ Always wrap `ALTER TABLE` in try/catch — SQLite has no `ADD COLUMN IF NOT EXIS
 
 Copy `.env.example` → `.env.local` to get started.
 
+**Model selection** (`lib/models.ts`, `system_config`): `agent_model` sets the SDK runner's model for all roles; `agent_model_<RoleId>` (e.g. `agent_model_RAZ-QA`) overrides per role. Resolution: role override → global → default `claude-sonnet-4-6`. Supported IDs and pricing live in `SUPPORTED_MODELS`; invalid values are ignored, and per-task cost is computed from the resolved model's pricing. Editable via `POST /api/config`. The Claude Code and Codex runners use their own CLI defaults — this applies to the SDK runner only.
+
 **Concurrency** (`system_config` key `max_concurrent_tasks`, default 2, clamped 1–8): the queue runner fills a pool of up to N tasks per 5 s tick, each in its own git worktree. Health-scan seeding only happens when the pool is fully idle. Editable via `POST /api/config`; live pool state is in `GET /api/status` under `runner`.
 
 **Spend caps** (`lib/spend.ts`, stored in `system_config`): `spend_daily_cap_usd` (default 10) stops the queue runner from claiming tasks for the rest of the UTC day once cumulative reported cost reaches it; `spend_task_cap_usd` (default 2) aborts a running agent whose reported cost crosses it (fails the task, no failure-strategy queued). A value of `0` disables that cap. Both are editable via `POST /api/config`; current state is in `GET /api/status` under `spend`.

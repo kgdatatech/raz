@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getConfig, setConfig, getAllConfig } from '@/lib/db'
 import { getActiveAgentRunner, getAvailableAgentRunners, isAgentRunnerAvailable, normalizeAgentRunner } from '@/lib/agent'
+import { isModelConfigKey, isSupportedModel, SUPPORTED_MODELS } from '@/lib/models'
 
 export const runtime = 'nodejs'
 
@@ -34,6 +35,15 @@ export async function POST(req: NextRequest) {
     if (!['0', '1'].includes(configValue)) {
       return NextResponse.json({ error: 'Invalid pause state.' }, { status: 400 })
     }
+  } else if (configKey === 'agent_model' || configKey.startsWith('agent_model_')) {
+    if (!isModelConfigKey(configKey)) {
+      return NextResponse.json({ error: 'Invalid model config key — use agent_model or agent_model_<RoleId>.' }, { status: 400 })
+    }
+    if (!isSupportedModel(configValue)) {
+      return NextResponse.json({ error: `Unsupported model. Valid options: ${Object.keys(SUPPORTED_MODELS).join(', ')}` }, { status: 400 })
+    }
+    setConfig(configKey, configValue)
+    return NextResponse.json({ ok: true })
   } else if (configKey === 'max_concurrent_tasks') {
     const n = parseInt(configValue, 10)
     if (!Number.isFinite(n) || n < 1 || n > 8 || String(n) !== configValue.trim()) {
