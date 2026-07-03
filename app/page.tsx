@@ -436,6 +436,7 @@ export default function RazDashboard() {
   const [queueDepth,         setQueueDepth]         = useState(0)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const debounceRef  = useRef<ReturnType<typeof setTimeout>  | null>(null)
+  const taskValueRef = useRef('')
 
   const logRef         = useRef<HTMLDivElement>(null)
   const abortRef       = useRef<AbortController | null>(null)
@@ -903,8 +904,26 @@ export default function RazDashboard() {
     }, 1000)
   }
 
+  // Server-side Haiku classification — refines the instant regex result once
+  // the user pauses. Returns null on any failure so callers fall back to regex.
+  async function classifyDispatch(value: string): Promise<DispatchResult | null> {
+    try {
+      const res = await fetch('/api/dispatch', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ description: value }),
+      })
+      if (!res.ok) return null
+      const data = await res.json()
+      return data?.role && data?.workflow ? (data as DispatchResult) : null
+    } catch {
+      return null
+    }
+  }
+
   function handleTaskInput(value: string) {
     setTask(value)
+    taskValueRef.current = value
     // Cancel any in-flight countdown or pending debounce on every keystroke
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; setDispatchCountdown(null) }
     if (debounceRef.current)  { clearTimeout(debounceRef.current);   debounceRef.current  = null }
@@ -918,14 +937,28 @@ export default function RazDashboard() {
     if (razMode === 'standard') {
       setRole(result.role)
       setWorkflow(result.workflow)
+      // Refine with Haiku after the user pauses; ignore stale responses
+      debounceRef.current = setTimeout(async () => {
+        debounceRef.current = null
+        const refined = await classifyDispatch(value)
+        if (refined && taskValueRef.current === value) {
+          setDispatch(refined)
+          setRole(refined.role)
+          setWorkflow(refined.workflow)
+        }
+      }, 800)
       return
     }
 
-    // Supervised / Autonomous: wait 1.5 s after the user stops typing, then start the 5 s countdown
+    // Supervised / Autonomous: wait 1.5 s after the user stops typing, refine the
+    // routing with Haiku, then start the 5 s countdown (regex result on failure)
     if ((razMode === 'supervised' || razMode === 'autonomous') && !running && selectedRepo && (selectedRepo.local_path || localPath.trim())) {
-      debounceRef.current = setTimeout(() => {
+      debounceRef.current = setTimeout(async () => {
         debounceRef.current = null
-        startCountdown(value, result)
+        const refined = (await classifyDispatch(value)) ?? result
+        if (taskValueRef.current !== value) return
+        setDispatch(refined)
+        startCountdown(value, refined)
       }, 1500)
     }
   }

@@ -69,7 +69,8 @@ raziel/
 │   ├── db.ts                 # SQLite schema + all DB helpers (migrations v1–v10)
 │   ├── roles.ts              # 5 role definitions, tool allowlists, system prompts
 │   ├── tools.ts              # Tool implementations (read_file, write_file, etc.)
-│   ├── dispatch.ts           # Smart intent detection (detectIntent)
+│   ├── dispatch.ts           # Regex intent detection (detectIntent) — client-safe, instant
+│   ├── dispatch-ai.ts        # Haiku classifier (classifyIntent) — server-only, regex fallback
 │   └── github.ts             # pushBranchAndOpenPR
 ├── .raziel/
 │   ├── raziel.db             # SQLite database (WAL mode)

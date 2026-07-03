@@ -26,7 +26,7 @@ Every PR runs through a gate: RAZ-QA reviews it, CI must be green, then it merge
 
 ## How tasks enter the queue
 
-**You** — type a task in the dashboard. RAZ routes it to the right agent.
+**You** — type a task in the dashboard. RAZ routes it to the right agent: an instant keyword match updates the role chip as you type, then a Claude Haiku classification refines the routing once you pause (falling back to keywords if the API is unreachable).
 
 **GitHub issues** — open an issue on GitHub and RAZ queues a task for it automatically. Labels determine which agent picks it up:
 
