@@ -174,6 +174,7 @@ The agent log streams in real time. When done, a PR link appears in the log head
 | **Issues** | GitHub issues synced to local DB. Click "→ Use as task" to populate the input. |
 | **Reports** | Markdown reports from RAZ-Sec and RAZ-Ops. |
 | **Brain** | Live graph of repos, tasks, and memory connections — visualizes how agents are building knowledge over time. |
+| **⚙ Settings** | Header popover: model per role (global + per-role dropdowns), spend caps with today's spend, max concurrent tasks with live worker count. |
 
 ---
 

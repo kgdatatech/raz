@@ -49,6 +49,16 @@ interface StatusData {
     pending: number
     total:   number
   }
+  spend?: {
+    today_usd:     number
+    daily_cap_usd: number
+    task_cap_usd:  number
+    cap_reached:   boolean
+  }
+  runner?: {
+    active_tasks:         number
+    max_concurrent_tasks: number
+  }
   recent_failures: RecentFailure[]
 }
 
@@ -209,6 +219,24 @@ export default function StatusPage(): React.ReactElement {
             sub={tasks.d7.total > 0 ? `${tasks.d7.complete} ✓  ${tasks.d7.failed} ✗  of ${tasks.d7.total}` : 'no tasks in 7d'}
             valueColor={tasks.d7.total === 0 ? 'text-gray-400' : tasks.d7.success_rate >= 80 ? 'text-green-600' : tasks.d7.success_rate >= 50 ? 'text-amber-500' : 'text-red-600'}
           />
+          {data.spend && (
+            <StatCard
+              label="Spend Today"
+              value={`$${data.spend.today_usd.toFixed(2)}`}
+              sub={data.spend.daily_cap_usd > 0
+                ? data.spend.cap_reached ? 'cap reached — queue paused until tomorrow (UTC)' : `of $${data.spend.daily_cap_usd.toFixed(2)} daily cap · $${data.spend.task_cap_usd.toFixed(2)}/task`
+                : 'no daily cap set'}
+              valueColor={data.spend.cap_reached ? 'text-red-600' : 'text-gray-900'}
+            />
+          )}
+          {data.runner && (
+            <StatCard
+              label="Workers"
+              value={`${data.runner.active_tasks}/${data.runner.max_concurrent_tasks}`}
+              sub="active / max concurrent"
+              valueColor={data.runner.active_tasks > 0 ? 'text-yellow-500' : 'text-gray-900'}
+            />
+          )}
         </div>
 
         {/* ── Per-role table + PR health + Questions ─────────────────────── */}

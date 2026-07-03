@@ -798,6 +798,10 @@ export function setConfig(key: string, value: string): void {
   db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
 }
 
+export function deleteConfig(key: string): void {
+  db.prepare('DELETE FROM system_config WHERE key = ?').run(key)
+}
+
 export function getAllConfig(): Record<string, string> {
   const rows = db.prepare('SELECT key, value FROM system_config').all() as { key: string; value: string }[]
   return Object.fromEntries(rows.map((r) => [r.key, r.value]))

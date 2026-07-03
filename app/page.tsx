@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { ROLES, ROLE_IDS, type RoleId, DEFAULT_ROLE } from '@/lib/roles'
 import { getAgentsDocumentationPreset } from '@/lib/quick-tasks'
 import BrainView from './components/BrainView'
+import SettingsPanel from './components/SettingsPanel'
 import { detectIntent, type DispatchResult } from '@/lib/dispatch'
 
 interface RepoRow {
@@ -423,6 +424,7 @@ export default function RazDashboard() {
   const [isPaused,           setIsPaused]           = useState(false)
   const [agentRunner,        setAgentRunner]        = useState<AgentRunner>('sdk')
   const [runnerOptions,      setRunnerOptions]      = useState<AgentRunnerOption[]>([])
+  const [showSettings,       setShowSettings]       = useState(false)
   const [baseBranch,         setBaseBranch]         = useState('')
   const [repoBranches,       setRepoBranches]       = useState<string[]>([])
   const [loadingBranches,    setLoadingBranches]    = useState(false)
@@ -1134,6 +1136,14 @@ export default function RazDashboard() {
             className="text-[9px] text-gray-400 hover:text-gray-700 transition-colors font-medium">
             status ↗
           </a>
+          {/* Settings — models, spend caps, concurrency */}
+          <div className="relative">
+            <button onClick={() => setShowSettings((v) => !v)} title="Models, spend caps, concurrency"
+              className={`text-[11px] transition-colors ${showSettings ? 'text-gray-900' : 'text-gray-400 hover:text-gray-700'}`}>
+              ⚙
+            </button>
+            {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+          </div>
         </div>
       </header>
 

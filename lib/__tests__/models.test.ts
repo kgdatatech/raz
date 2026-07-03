@@ -4,7 +4,7 @@ vi.hoisted(() => {
   process.env['RAZ_DB_PATH'] = ':memory:'
 })
 
-import db, { setConfig } from '@/lib/db'
+import db, { setConfig, deleteConfig } from '@/lib/db'
 import {
   getModelForRole, getConfiguredModelForRole, getModelPricing, isSupportedModel, isModelConfigKey,
   SUPPORTED_MODELS, DEFAULT_MODEL,
@@ -97,6 +97,13 @@ describe('getConfiguredModelForRole()', () => {
   it('returns null when only an invalid value is configured', () => {
     setConfig('agent_model', 'not-a-model')
     expect(getConfiguredModelForRole('RAZ-Dev')).toBeNull()
+  })
+
+  it('returns null again after an override is cleared via deleteConfig', () => {
+    setConfig('agent_model_RAZ-QA', 'claude-haiku-4-5')
+    expect(getConfiguredModelForRole('RAZ-QA')).toBe('claude-haiku-4-5')
+    deleteConfig('agent_model_RAZ-QA')
+    expect(getConfiguredModelForRole('RAZ-QA')).toBeNull()
   })
 })
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getConfig, setConfig, getAllConfig } from '@/lib/db'
+import { getConfig, setConfig, deleteConfig, getAllConfig } from '@/lib/db'
 import { getActiveAgentRunner, getAvailableAgentRunners, isAgentRunnerAvailable, normalizeAgentRunner } from '@/lib/agent'
 import { isModelConfigKey, isSupportedModel, SUPPORTED_MODELS } from '@/lib/models'
 
@@ -38,6 +38,11 @@ export async function POST(req: NextRequest) {
   } else if (configKey === 'agent_model' || configKey.startsWith('agent_model_')) {
     if (!isModelConfigKey(configKey)) {
       return NextResponse.json({ error: 'Invalid model config key — use agent_model or agent_model_<RoleId>.' }, { status: 400 })
+    }
+    // 'default' clears the override — runners fall back (SDK: built-in default, CC: CLI default)
+    if (configValue === 'default') {
+      deleteConfig(configKey)
+      return NextResponse.json({ ok: true })
     }
     if (!isSupportedModel(configValue)) {
       return NextResponse.json({ error: `Unsupported model. Valid options: ${Object.keys(SUPPORTED_MODELS).join(', ')}` }, { status: 400 })
