@@ -6,7 +6,7 @@ vi.hoisted(() => {
 
 import db, { setConfig } from '@/lib/db'
 import {
-  getModelForRole, getModelPricing, isSupportedModel, isModelConfigKey,
+  getModelForRole, getConfiguredModelForRole, getModelPricing, isSupportedModel, isModelConfigKey,
   SUPPORTED_MODELS, DEFAULT_MODEL,
 } from '@/lib/models'
 
@@ -72,6 +72,31 @@ describe('getModelForRole()', () => {
   it('ignores an invalid global value and falls back to the default', () => {
     setConfig('agent_model', 'claude-sonnet-4-6-20251114')
     expect(getModelForRole('RAZ-Dev')).toBe(DEFAULT_MODEL)
+  })
+})
+
+describe('getConfiguredModelForRole()', () => {
+  beforeEach(clearModelConfig)
+
+  it('returns null when nothing is explicitly configured (CC runner keeps CLI default)', () => {
+    expect(getConfiguredModelForRole('RAZ-Dev')).toBeNull()
+    expect(getConfiguredModelForRole()).toBeNull()
+  })
+
+  it('returns the configured model when set', () => {
+    setConfig('agent_model', 'claude-opus-4-8')
+    expect(getConfiguredModelForRole('RAZ-Dev')).toBe('claude-opus-4-8')
+  })
+
+  it('prefers the per-role override', () => {
+    setConfig('agent_model', 'claude-opus-4-8')
+    setConfig('agent_model_RAZ-QA', 'claude-haiku-4-5')
+    expect(getConfiguredModelForRole('RAZ-QA')).toBe('claude-haiku-4-5')
+  })
+
+  it('returns null when only an invalid value is configured', () => {
+    setConfig('agent_model', 'not-a-model')
+    expect(getConfiguredModelForRole('RAZ-Dev')).toBeNull()
   })
 })
 

@@ -13,6 +13,7 @@ import {
   getRecentChatContext,
 } from './db'
 import { ROLES, DEFAULT_ROLE, type RoleId } from './roles'
+import { getConfiguredModelForRole } from './models'
 import type { AgentTask, AgentEvent, EventCallback } from './agent-sdk'
 
 export type { AgentTask, AgentEvent, EventCallback }
@@ -368,9 +369,14 @@ export async function runAgent(task: AgentTask, onEvent: EventCallback, signal?:
     const savedSession = getSessionId(taskId)
     const taskPrompt   = `Task: ${description}${issueNumber ? `\n\nLinked issue: #${issueNumber}` : ''}${isWslPath(worktreePath!) ? `\n\nWorking directory: ${worktreePath}` : ''}`
 
+    // Only pass --model when explicitly configured — otherwise the user's
+    // Claude Code CLI default (set via /model) stays in control.
+    const configuredModel = getConfiguredModelForRole(role)
+    const modelArgs       = configuredModel ? ['--model', configuredModel] : []
+
     const claudeArgs = savedSession
-      ? ['--resume', savedSession, '-p', 'Continue from where you left off. Review what was already done and proceed with remaining steps.', '--output-format', 'stream-json', '--verbose', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
-      : ['-p', taskPrompt, '--system-prompt', systemPrompt, '--output-format', 'stream-json', '--verbose', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath]
+      ? ['--resume', savedSession, '-p', 'Continue from where you left off. Review what was already done and proceed with remaining steps.', '--output-format', 'stream-json', '--verbose', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath, ...modelArgs]
+      : ['-p', taskPrompt, '--system-prompt', systemPrompt, '--output-format', 'stream-json', '--verbose', '--allowedTools', allowedTools, '--mcp-config', mcpConfigPath, ...modelArgs]
 
     const { exe, args, shell } = resolveClaudeSpawn(claudeArgs)
     const {

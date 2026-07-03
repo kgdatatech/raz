@@ -108,7 +108,7 @@ Set either cap to `0` to disable it. Caps are editable via `POST /api/config`, a
 
 ## Model selection
 
-The SDK runner's Claude model is configurable via `POST /api/config`: `agent_model` for all roles, or `agent_model_<RoleId>` per role (e.g. run RAZ-QA reviews on `claude-haiku-4-5` while RAZ-Dev builds on `claude-opus-4-8`). Default: `claude-sonnet-4-6`. Per-task cost tracking automatically uses the selected model's pricing, so the spend caps stay accurate.
+The Claude model is configurable via `POST /api/config`: `agent_model` for all roles, or `agent_model_<RoleId>` per role (e.g. run RAZ-QA reviews on `claude-haiku-4-5` while RAZ-Dev builds on `claude-opus-4-8`). Applies to both the SDK runner (default `claude-sonnet-4-6`) and the Claude Code runner (`--model` is passed only when configured — otherwise your CLI's `/model` default is used). Per-task cost tracking automatically uses the selected model's pricing, so the spend caps stay accurate.
 
 ---
 
