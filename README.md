@@ -4,7 +4,7 @@
 
 You point RAZ at a GitHub repo. It watches for issues and pull requests, picks the right specialist agent to handle each one, does the work in an isolated branch, opens a PR, reviews it before merging, waits for CI to pass, then merges. When its queue runs dry, it scans the codebase itself for things to fix and queues those too. The only thing you have to do is turn it on.
 
-Built by Archon Systems.
+Built by [Keanu Gomes](https://github.com/kgdatatech) — Founder, [Archon Systems](https://buildarchon.com).
 
 ---
 
@@ -214,4 +214,8 @@ Next.js 16 · React 19 · TypeScript strict · Tailwind v4 · SQLite (better-sql
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+---
+
+<sub>© 2026 Keanu Gomes · Archon Systems LLC · [buildarchon.com](https://buildarchon.com)</sub>

@@ -2,6 +2,13 @@
   "name": "raziel",
   "version": "0.1.0",
   "private": true,
+  "description": "A self-operating engineering team: five specialist AI agents that triage issues, work in isolated git worktrees, review each other's PRs, and merge behind CI gates.",
+  "author": "Keanu Gomes (https://buildarchon.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kgdatatech/raz.git"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "cross-env NODE_ENV=production next build",
