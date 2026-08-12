@@ -1,0 +1,25 @@
+name: Contributor License Agreement
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: CLA acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify CLA acceptance
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const body = context.payload.pull_request?.body ?? ''
+            const accepted = /-\s*\[[xX]\]\s*I have read and agree to the Contributor License Agreement\./.test(body)
+
+            if (!accepted) {
+              core.setFailed('Read CLA.md and check the Contributor License Agreement box in the pull request description.')
+            }

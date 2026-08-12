@@ -6,6 +6,11 @@ You point RAZ at a GitHub repo. It watches for issues and pull requests, picks t
 
 Built by [Keanu Gomes](https://github.com/kgdatatech) — Founder, [Archon Systems](https://buildarchon.com).
 
+> **License:** RAZ is source-available under PolyForm Shield. You may inspect, use,
+> modify, and redistribute it for permitted purposes, but you may not provide a
+> competing product or service. [Commercial licenses](COMMERCIAL-LICENSE.md) are
+> available from Archon Systems LLC.
+
 ---
 
 ## What it does
@@ -214,7 +219,12 @@ Next.js 16 · React 19 · TypeScript strict · Tailwind v4 · SQLite (better-sql
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+RAZ is source-available under the [PolyForm Shield License 1.0.0](LICENSE).
+The license does not permit providing a product or service that competes with
+RAZ or other covered Archon Systems offerings. See [commercial licensing](COMMERCIAL-LICENSE.md),
+[required notices](NOTICE), and the [trademark policy](TRADEMARKS.md).
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md).
 
 ---
 
